@@ -1,10 +1,14 @@
 # OpenHAVoice
 
-**Home Assistant Voice PE → OpenClaw voice relay over the ESPHome Native API.**
+**Run a stock Home Assistant Voice Preview Edition as a local OpenClaw/Zoe voice front-end without Home Assistant as the active voice backend.**
 
-OpenHAVoice turns a stock Home Assistant Voice Preview Edition into a local voice front-end for OpenClaw/Zoe without using Home Assistant as the active voice backend.
+OpenHAVoice connects directly to the Voice PE over the **ESPHome Native API** (`:6053`) using the device's Noise PSK. It subscribes to the voice assistant stream, receives microphone PCM audio, runs local STT/TTS, sends the transcript to OpenClaw, and returns a WAV playback URL to the device.
 
-Stock Voice PE firmware exposes voice sessions through the **ESPHome Native API** on port `6053`. The relay connects with the device's Noise PSK, subscribes to the voice assistant stream, receives microphone PCM audio, runs local STT/TTS, and sends a playback URL back to the device.
+## Credits / prior art
+
+Huge kudos to [ottocoster/voicepe-standalone](https://github.com/ottocoster/voicepe-standalone), which independently demonstrates the key stock-firmware path: using `aioesphomeapi` to connect directly to the Home Assistant Voice PE, receive API audio from wake-word sessions, run VAD/STT locally, and operate without Home Assistant as the voice backend.
+
+OpenHAVoice builds in the same spirit, with a focus on OpenClaw integration, per-device OpenClaw sessions, local Whisper/Orpheus services, systemd deployment, and future browser-based onboarding.
 
 ## Current status
 
@@ -13,32 +17,28 @@ Stock Voice PE firmware exposes voice sessions through the **ESPHome Native API*
 Test device:
 
 - Device: `home-assistant-voice-0abf52`
+- IP: `192.168.50.146`
 - Firmware/project: `Nabu Casa.Home Assistant Voice PE` `26.4.0`
 - ESPHome: `2026.3.2`
 - API: ESPHome Native API with Noise encryption
-- Home Assistant integration: temporarily disabled during direct relay tests
+- Home Assistant integration: disabled during direct relay tests
 
-Proven roundtrip:
+Proven flows:
 
-```text
-Voice PE button
-  → ESPHome Native API voice assistant session
-  → PCM audio streamed to relay
-  → local Whisper STT
-  → Orpheus/Jana TTS
-  → Voice PE fetches WAV from relay
-  → playback on the Voice PE speaker
-```
+- Button-triggered voice sessions
+- Wake-word-triggered sessions with `Okay Nabu`
+- Dedicated OpenClaw session key: `openhavoice:<device-name>`
+- Local roundtrip through Whisper STT, OpenClaw Chat Completions, Orpheus/Jana TTS, and Voice PE playback
+- Persistent relay connection restores the Voice PE from red/not-ready state when HA is not connected
 
-Confirmed transcript from the successful roundtrip:
+Example relay evidence:
 
 ```text
-Hallo Zoe, das ist ein weiterer Test. 1, 2, 3.
-```
-
-Confirmed playback request from the Voice PE:
-
-```text
+CONNECTED home-assistant-voice-0abf52. Backend client is active; session='openhavoice:home-assistant-voice-0abf52'
+START wake='Okay Nabu' flags=1 ...
+TRANSCRIPT 'Wie geht es dir heute? Alles gut bei dir?'
+OPENCLAW_REPLY ...
+TTS_READY http://192.168.50.30:8765/tts/...
 SERVE_TTS remote=192.168.50.146
 ```
 
@@ -74,7 +74,7 @@ SERVE_TTS remote=192.168.50.146
          └────────────┘
 ```
 
-## Running the proof-of-concept
+## Quick start
 
 ```bash
 cd relay
@@ -88,17 +88,27 @@ Edit `.env`:
 
 ```bash
 VOICE_HOST=192.168.50.x
-VOICE_PSK=base64-noise-psk-from-ha-esphome-config
+VOICE_PSK=base64-noise-psk-from-esphome-config
+
 WHISPER_URL=http://192.168.50.51:8000/v1/audio/transcriptions
 ORPHEUS_URL=http://192.168.50.52:5005/v1/audio/speech
-TTS_PORT=8765
+ORPHEUS_MODEL=orpheus-german-fix
+ORPHEUS_VOICE=jana
+
 OPENCLAW_URL=http://127.0.0.1:18789
 OPENCLAW_TOKEN=...
-# optional; empty means openhavoice:<device-name>
+OPENCLAW_MODEL=openclaw/default
+
+# Optional. Empty means: openhavoice:<device-name>
 OPENCLAW_SESSION_KEY=
+OPENCLAW_MESSAGE_CHANNEL=voice
+
+TTS_HOST=0.0.0.0
+TTS_PORT=8765
+TTS_POST_PLAYBACK_GRACE_SECONDS=1.0
 ```
 
-Then run:
+Run:
 
 ```bash
 python relay.py
@@ -106,23 +116,63 @@ python relay.py
 
 The relay is intended to stay running as the active backend client. If the Voice PE reboots or drops the TCP connection, the relay reconnects automatically with backoff.
 
-For current tests:
+## systemd service
+
+A user service template lives in [`systemd/`](systemd/):
+
+```bash
+mkdir -p ~/.config/openhavoice ~/.config/systemd/user
+cp relay/.env.example ~/.config/openhavoice/relay.env
+cp systemd/openhavoice-relay.service ~/.config/systemd/user/
+
+systemctl --user daemon-reload
+systemctl --user enable --now openhavoice-relay.service
+journalctl --user -u openhavoice-relay.service -f
+```
+
+## Testing against a Voice PE that was already added to HA
+
+For direct relay testing with stock firmware:
 
 1. Disable the Home Assistant ESPHome integration entry for the test Voice PE.
 2. Do **not** delete the device.
 3. Do **not** flash firmware.
-4. Start the relay.
-5. Press the Voice PE button.
-6. Speak a short sentence.
-7. Wait for playback.
+4. Start the OpenHAVoice relay.
+5. Wait for the relay to log `CONNECTED ... Backend client is active`.
+6. Press the Voice PE button or say `Okay Nabu`.
+7. Speak a short sentence and wait for playback.
+
+If the LED stays red or button/wake sessions do not start, reboot the Voice PE and let the relay reconnect.
+
+## Device controls
+
+[`tools/openhavoice-control.py`](tools/openhavoice-control.py) provides safe ESPHome entity inspection/control helpers.
+
+Currently supported safe controls include:
+
+- list entities
+- wake sound toggle
+- mute toggle
+- wake-word sensitivity
+
+Restart is intentionally guarded by an explicit `--allow-restart` flag.
+
+## Roadmap
+
+Current focus areas are tracked in Gitea issues:
+
+- Browser-based Improv BLE provisioning for brand-new Voice PE devices
+- LAN/mDNS discovery and pairing flow after Wi-Fi provisioning
+- Better VAD/timeout/recovery behavior
+- Web UI dashboard and safe controls
+- Relay metrics/events
+- Optional OpenClaw paired-node integration
 
 ## Notes and constraints
 
-- Home Assistant can remain installed, but for direct relay testing its ESPHome connection to the test device must be disabled. Otherwise HA appears to own the voice assistant session.
-- Normal ESPHome entity reads can work while HA exists, but voice assistant audio did not reach the relay until HA was disabled for the device.
-- A device reboot may be needed after toggling HA integration state if the LED stays red and button sessions do not start; the relay should then reconnect automatically.
+- Home Assistant can remain installed, but for direct relay testing its ESPHome connection to the test device should be disabled. Otherwise HA may own the voice assistant session.
 - The physical mute switch must be off.
-- The relay currently uses button-triggered sessions. Wake word behavior still needs explicit testing.
+- Current local STT/TTS latency is usable but not yet optimized for instant assistant feel.
 - The relay sends each transcript to OpenClaw Chat Completions and speaks the returned assistant text.
 - By default, each Voice PE uses a dedicated persistent session key: `openhavoice:<device-name>`.
 
@@ -130,4 +180,5 @@ For current tests:
 
 - Never commit the Voice PE Noise PSK.
 - Never commit OpenClaw tokens or service credentials.
-- `.env` is ignored and should stay local.
+- Never log Wi-Fi passwords during future BLE provisioning work.
+- `.env` and deployed env files must stay local.
