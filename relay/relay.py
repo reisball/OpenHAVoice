@@ -229,7 +229,9 @@ async def finish(reason: str, abort: bool = False) -> None:
         response_text = await loop.run_in_executor(None, openclaw_chat, text)
         print(f"OPENCLAW_REPLY {response_text!r}", flush=True)
         await speak(response_text)
-        await asyncio.sleep(8)
+        post_tts_grace_seconds = float(os.environ.get("TTS_POST_PLAYBACK_GRACE_SECONDS", "1.0"))
+        if post_tts_grace_seconds > 0:
+            await asyncio.sleep(post_tts_grace_seconds)
     except Exception as exc:  # noqa: BLE001
         print(f"ROUNDTRIP_FAILED {exc!r}", flush=True)
     finally:
