@@ -170,7 +170,7 @@ Current focus areas are tracked in Gitea issues:
 
 ## Notes and constraints
 
-- Home Assistant can remain installed, but for direct relay testing its ESPHome connection to the test device should be disabled. Otherwise HA may own the voice assistant session.
+- Home Assistant can remain installed, but for direct relay testing its ESPHome connection to the test device should be disabled. Otherwise HA may own the voice assistant session. See [`docs/home-assistant-handoff.md`](docs/home-assistant-handoff.md).
 - The physical mute switch must be off.
 - Current local STT/TTS latency is usable but not yet optimized for instant assistant feel.
 - The relay sends each transcript to OpenClaw Chat Completions and speaks the returned assistant text.
