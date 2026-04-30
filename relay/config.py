@@ -1,0 +1,211 @@
+"""Configuration management for OpenHAVoice relay.
+
+Loads from .env file + environment variables. Supports CLI and Web UI via
+the RelayConfig dataclass. Secret values are redacted in non-reveal exports.
+"""
+
+from __future__ import annotations
+
+import os
+import re
+from dataclasses import dataclass, field, fields
+from pathlib import Path
+from typing import Any
+
+ENV_PATH = Path(__file__).with_name(".env")
+
+SECRET_KEYS = {"VOICE_PASSWORD", "VOICE_PSK", "OPENCLAW_TOKEN"}
+
+
+@dataclass
+class RelayConfig:
+    # ── Voice PE ──────────────────────────────────────────────
+    voice_host: str = ""
+    voice_psk: str = ""  # secret
+    voice_password: str = ""  # secret
+
+    # ── STT (Whisper) ─────────────────────────────────────────
+    whisper_url: str = "http://192.168.50.51:8000/v1/audio/transcriptions"
+    language: str = "de"
+
+    # ── TTS (Orpheus) ─────────────────────────────────────────
+    orpheus_url: str = "http://192.168.50.52:5005/v1/audio/speech"
+    orpheus_model: str = "orpheus-german-fix"
+    orpheus_voice: str = "jana"
+    tts_host: str = "0.0.0.0"
+    tts_port: int = 8765
+    tts_post_playback_grace_seconds: float = 1.0
+
+    # ── OpenClaw Gateway ──────────────────────────────────────
+    openclaw_url: str = "http://127.0.0.1:18789"
+    openclaw_token: str = ""  # secret
+    openclaw_session_key: str = ""
+    openclaw_model: str = "openclaw/default"
+    openclaw_message_channel: str = "voice"
+    openclaw_voice_system_prompt: str = (
+        "Du antwortest als Zoe über einen Voice Assistant. Antworte kurz, natürlich "
+        "und ohne Markdown, Listen oder Emojis. Ein bis zwei Sätze reichen."
+    )
+
+    # ── VAD / Capture ─────────────────────────────────────────
+    min_speech_ms: int = 300
+    end_silence_ms: int = 900
+    max_capture_seconds: float = 20.0
+
+    # ── Network / Reconnect ───────────────────────────────────
+    reconnect_initial_seconds: float = 1.0
+    reconnect_max_seconds: float = 30.0
+
+    # ── Methods ───────────────────────────────────────────────
+
+    @classmethod
+    def load(cls, path: Path | None = None) -> "RelayConfig":
+        """Load config from .env file and environment variables."""
+        env = _read_dotenv(path or ENV_PATH)
+        values: dict[str, Any] = {}
+        for fld in fields(cls):
+            env_key = _field_to_env(fld.name)
+            raw = os.environ.get(env_key, env.get(env_key, ""))
+            if raw.strip():
+                values[fld.name] = _coerce(raw, fld.type)
+        return cls(**values)
+
+    def save(self, path: Path | None = None) -> None:
+        """Write current config to .env file, preserving comments."""
+        target = path or ENV_PATH
+        current_env = _read_dotenv(target)
+        existing = target.read_text(encoding="utf-8") if target.exists() else ""
+
+        new_lines: list[str] = []
+        written_keys: set[str] = set()
+
+        # Update existing lines in-place
+        for line in existing.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#") or "=" not in stripped:
+                new_lines.append(line)
+                continue
+            key = stripped.split("=", 1)[0].strip()
+            env_key = key.upper()
+            field_name = _env_to_field(env_key)
+            if field_name and hasattr(self, field_name):
+                value = getattr(self, field_name)
+                new_lines.append(f"{env_key}={value}")
+                written_keys.add(env_key)
+            else:
+                new_lines.append(line)
+
+        # Append new keys that weren't in the file
+        for fld in fields(self):
+            env_key = _field_to_env(fld.name)
+            if env_key not in written_keys:
+                value = getattr(self, fld.name)
+                new_lines.append(f"{env_key}={value}")
+
+        target.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+
+    def to_dict(self, reveal: bool = False) -> dict[str, Any]:
+        """Export config as dict. Secrets are redacted unless reveal=True."""
+        result: dict[str, Any] = {}
+        for fld in fields(self):
+            value = getattr(self, fld.name)
+            env_key = _field_to_env(fld.name)
+            if env_key in SECRET_KEYS and not reveal:
+                result[fld.name] = "****" if value else ""
+            else:
+                result[fld.name] = value
+        return result
+
+    def validate(self) -> list[str]:
+        """Return list of validation errors. Empty list = valid."""
+        errors: list[str] = []
+
+        if not self.voice_host.strip():
+            errors.append("voice_host is required")
+        if not self.voice_psk.strip():
+            errors.append("voice_psk is required")
+
+        for label, url in [("whisper_url", self.whisper_url),
+                           ("orpheus_url", self.orpheus_url),
+                           ("openclaw_url", self.openclaw_url)]:
+            if url and not url.startswith(("http://", "https://")):
+                errors.append(f"{label} must start with http:// or https://")
+
+        if not (1 <= self.tts_port <= 65535):
+            errors.append("tts_port must be between 1 and 65535")
+        if self.min_speech_ms < 0:
+            errors.append("min_speech_ms must be >= 0")
+        if self.end_silence_ms < 0:
+            errors.append("end_silence_ms must be >= 0")
+        if self.max_capture_seconds <= 0:
+            errors.append("max_capture_seconds must be > 0")
+        if self.reconnect_initial_seconds <= 0:
+            errors.append("reconnect_initial_seconds must be > 0")
+        if self.reconnect_max_seconds < self.reconnect_initial_seconds:
+            errors.append("reconnect_max_seconds must be >= reconnect_initial_seconds")
+
+        return errors
+
+    def update(self, key: str, value: str) -> None:
+        """Set a single field by its env key or field name."""
+        field_name = _env_to_field(key.upper()) or key.lower()
+        if not hasattr(self, field_name):
+            raise KeyError(f"Unknown config key: {key}")
+        fld_type = type(getattr(self, field_name))
+        setattr(self, field_name, _coerce(value, fld_type))
+
+    def env_for_field(self, field_name: str) -> str:
+        """Return the configured value for a field, accepting env-key or field-name."""
+        name = _env_to_field(field_name.upper()) or field_name.lower()
+        return name
+
+
+# ── Helpers ───────────────────────────────────────────────────
+
+def _field_to_env(name: str) -> str:
+    """Convert snake_case field name to UPPER_CASE env var."""
+    return name.upper()
+
+
+def _env_to_field(env_key: str) -> str | None:
+    """Convert UPPER_CASE env var back to field name, or None if unknown."""
+    field_name = env_key.lower()
+    if field_name in {f.name for f in fields(RelayConfig)}:
+        return field_name
+    return None
+
+
+def _coerce(raw: str, target_type: type) -> Any:
+    """Coerce a string value to the target type."""
+    if target_type is bool:
+        return raw.strip().lower() in ("1", "true", "yes", "on")
+    if target_type is int:
+        return int(raw) if raw.strip() else 0
+    if target_type is float:
+        return float(raw) if raw.strip() else 0.0
+    return raw
+
+
+def _read_dotenv(path: Path) -> dict[str, str]:
+    """Read KEY=value pairs from a .env file (no override of os.environ)."""
+    result: dict[str, str] = {}
+    if not path.exists():
+        return result
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        result[key.strip()] = value.strip().strip("'\"")
+    return result
+
+
+def load_config() -> RelayConfig:
+    """Convenience: load config, apply to os.environ, return object."""
+    config = RelayConfig.load()
+    for fld in fields(config):
+        env_key = _field_to_env(fld.name)
+        value = getattr(config, fld.name)
+        if value is not None and env_key not in os.environ:
+            os.environ[env_key] = str(value)
+    return config

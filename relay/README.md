@@ -40,9 +40,41 @@ Voice PE button
 python3 -m venv .venv
 . .venv/bin/activate
 pip install -r requirements.txt
-cp .env.example .env
-python relay.py
+
+# Generate default .env
+python -m relay.cli generate
+
+# Edit .env with your settings
+vim .env
+
+# Validate
+python -m relay.cli validate
+
+# Start the relay
+python -m relay.relay
 ```
+
+### CLI Configuration
+
+```bash
+python -m relay.cli show              # Display current config (secrets redacted)
+python -m relay.cli show --reveal     # Show secrets
+python -m relay.cli show --json       # JSON output
+python -m relay.cli set KEY VALUE     # Update a single field
+python -m relay.cli validate          # Check config validity
+python -m relay.cli generate          # Generate .env.example
+```
+
+### Web UI
+
+When the relay is running, open `http://<host>:8765/` for the configuration dashboard.
+
+**API endpoints:**
+- `GET /config` — JSON config (secrets redacted)
+- `GET /config?reveal=1` — JSON config with secrets
+- `PUT /config` — Update fields (JSON body)
+- `POST /config/validate` — Validate without saving
+- `POST /config/reload` — Reload from .env file
 
 The process stays connected as the active Voice PE backend and reconnects automatically if the device reboots or the TCP connection drops.
 

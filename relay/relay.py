@@ -4,13 +4,17 @@
 This proof-of-concept intentionally uses the Voice PE stock ESPHome firmware.
 It does not implement Wyoming. The Voice PE voice assistant stream is exposed via
 ESPHome Native API on TCP/6053 and requires the device Noise PSK.
+
+Config management: CLI via `python -m relay.cli`, Web UI via /config routes.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import socket
+import sys
 import time
 import uuid
 import wave
@@ -21,6 +25,10 @@ import requests
 import webrtcvad
 from aioesphomeapi import APIClient, VoiceAssistantEventType as E
 from aiohttp import web
+
+from .config import RelayConfig, load_config
+
+CFG: RelayConfig = None  # type: ignore[assignment]  # set in main()
 
 
 BUFFER = bytearray()
@@ -36,26 +44,6 @@ LOCAL_IP = ""
 VAD = webrtcvad.Vad(2)
 FRAME_MS = 30
 FRAME_BYTES = int(16000 * 2 * FRAME_MS / 1000)
-
-
-def load_env() -> None:
-    """Load KEY=value pairs from .env without overriding shell env vars."""
-    path = Path(__file__).with_name(".env")
-    if not path.exists():
-        return
-    for raw in path.read_text(encoding="utf-8").splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        os.environ.setdefault(key.strip(), value.strip().strip("'\""))
-
-
-def require(name: str) -> str:
-    value = os.environ.get(name)
-    if not value:
-        raise SystemExit(f"Missing {name}; copy .env.example to .env and configure it")
-    return value
 
 
 def local_ip_for(target: str) -> str:
@@ -76,8 +64,8 @@ def write_wav(path: Path, pcm: bytes) -> None:
 
 
 def transcribe(path: Path) -> str:
-    url = os.environ.get("WHISPER_URL", "http://192.168.50.51:8000/v1/audio/transcriptions")
-    language = os.environ.get("LANGUAGE", "de")
+    url = CFG.whisper_url
+    language = CFG.language
     with path.open("rb") as handle:
         response = requests.post(
             url,
@@ -90,10 +78,10 @@ def transcribe(path: Path) -> str:
 
 
 def synthesize(text: str) -> bytes:
-    url = os.environ.get("ORPHEUS_URL", "http://192.168.50.52:5005/v1/audio/speech")
+    url = CFG.orpheus_url
     payload = {
-        "model": os.environ.get("ORPHEUS_MODEL", "orpheus-german-fix"),
-        "voice": os.environ.get("ORPHEUS_VOICE", "jana"),
+        "model": CFG.orpheus_model,
+        "voice": CFG.orpheus_voice,
         "input": text,
     }
     response = requests.post(url, json=payload, timeout=90)
@@ -102,38 +90,34 @@ def synthesize(text: str) -> bytes:
 
 
 def session_key_for_device(device_name: str | None = None) -> str:
-    configured = os.environ.get("OPENCLAW_SESSION_KEY", "").strip()
+    configured = CFG.openclaw_session_key.strip()
     if configured:
         return configured
-    suffix = (device_name or os.environ.get("VOICE_HOST", "voice-pe")).strip()
+    suffix = (device_name or CFG.voice_host).strip()
     safe = "".join(ch if ch.isalnum() or ch in "._:-" else "-" for ch in suffix).strip("-")
     return f"openhavoice:{safe or 'voice-pe'}"
 
 
 def openclaw_chat(message: str) -> str:
-    url = os.environ.get("OPENCLAW_URL", "http://127.0.0.1:18789").rstrip("/")
+    url = CFG.openclaw_url.rstrip("/")
     if not url.endswith("/v1/chat/completions"):
         url = url + "/v1/chat/completions"
 
     headers = {"Content-Type": "application/json"}
-    token = os.environ.get("OPENCLAW_TOKEN", "")
+    token = CFG.openclaw_token
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
     session_key = session_key_for_device(os.environ.get("OPENHAVOICE_DEVICE_NAME"))
     headers["x-openclaw-session-key"] = session_key
 
-    channel = os.environ.get("OPENCLAW_MESSAGE_CHANNEL", "voice")
+    channel = CFG.openclaw_message_channel
     if channel:
         headers["x-openclaw-message-channel"] = channel
 
-    system_prompt = os.environ.get(
-        "OPENCLAW_VOICE_SYSTEM_PROMPT",
-        "Du antwortest als Zoe über einen Voice Assistant. Antworte kurz, natürlich "
-        "und ohne Markdown, Listen oder Emojis. Ein bis zwei Sätze reichen.",
-    )
+    system_prompt = CFG.openclaw_voice_system_prompt
     payload = {
-        "model": os.environ.get("OPENCLAW_MODEL", "openclaw/default"),
+        "model": CFG.openclaw_model,
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": message},
@@ -165,10 +149,18 @@ async def tts_handler(request: web.Request) -> web.Response:
 async def start_http_server() -> web.AppRunner:
     app = web.Application()
     app.router.add_get("/tts/{token}.wav", tts_handler)
+
+    # Config Web UI routes
+    app.router.add_get("/config", config_get)
+    app.router.add_put("/config", config_put)
+    app.router.add_post("/config/validate", config_validate)
+    app.router.add_post("/config/reload", config_reload)
+    app.router.add_get("/", config_ui)
+
     runner = web.AppRunner(app)
     await runner.setup()
-    host = os.environ.get("TTS_HOST", "0.0.0.0")
-    port = int(os.environ.get("TTS_PORT", "8765"))
+    host = CFG.tts_host
+    port = CFG.tts_port
     await web.TCPSite(runner, host, port).start()
     print(f"HTTP_TTS http://{LOCAL_IP}:{port}", flush=True)
     return runner
@@ -180,7 +172,7 @@ async def speak(text: str) -> None:
     audio = await loop.run_in_executor(None, synthesize, text)
     token = uuid.uuid4().hex
     TTS_FILES[token] = audio
-    port = int(os.environ.get("TTS_PORT", "8765"))
+    port = CFG.tts_port
     url = f"http://{LOCAL_IP}:{port}/tts/{token}.wav"
     print(f"TTS_READY {url} bytes={len(audio)} text={text!r}", flush=True)
     CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_TTS_START, {"text": text})
@@ -206,8 +198,7 @@ async def finish(reason: str, abort: bool = False) -> None:
     except Exception as exc:  # noqa: BLE001 - probe script should keep running
         print(f"WARN vad_end failed {exc!r}", flush=True)
 
-    min_speech_ms = int(os.environ.get("MIN_SPEECH_MS", "300"))
-    if abort or size < 3200 or SPEECH_MS < min_speech_ms:
+    if abort or size < 3200 or SPEECH_MS < CFG.min_speech_ms:
         try:
             CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_RUN_END, None)
         except Exception:
@@ -229,7 +220,7 @@ async def finish(reason: str, abort: bool = False) -> None:
         response_text = await loop.run_in_executor(None, openclaw_chat, text)
         print(f"OPENCLAW_REPLY {response_text!r}", flush=True)
         await speak(response_text)
-        post_tts_grace_seconds = float(os.environ.get("TTS_POST_PLAYBACK_GRACE_SECONDS", "1.0"))
+        post_tts_grace_seconds = CFG.tts_post_playback_grace_seconds
         if post_tts_grace_seconds > 0:
             await asyncio.sleep(post_tts_grace_seconds)
     except Exception as exc:  # noqa: BLE001
@@ -289,8 +280,8 @@ async def on_audio(data: bytes) -> None:
             flush=True,
         )
 
-    end_silence_ms = int(os.environ.get("END_SILENCE_MS", "900"))
-    min_speech_ms = int(os.environ.get("MIN_SPEECH_MS", "300"))
+    end_silence_ms = CFG.end_silence_ms
+    min_speech_ms = CFG.min_speech_ms
     if SPEECH_SEEN and SPEECH_MS >= min_speech_ms and SILENT_MS >= end_silence_ms:
         await finish("vad_silence")
 
@@ -303,7 +294,7 @@ async def run_connected(host: str, psk: str) -> None:
     """Hold one long-lived ESPHome API connection until it fails or is cancelled."""
     global CLIENT, STARTED_AT, STOPPING
 
-    CLIENT = APIClient(host, 6053, os.environ.get("VOICE_PASSWORD", ""), noise_psk=psk)
+    CLIENT = APIClient(host, 6053, CFG.voice_password, noise_psk=psk)
     unsubscribe = None
     try:
         await CLIENT.connect(login=True)
@@ -320,7 +311,7 @@ async def run_connected(host: str, psk: str) -> None:
             handle_audio=on_audio,
         )
 
-        max_capture_seconds = float(os.environ.get("MAX_CAPTURE_SECONDS", "20"))
+        max_capture_seconds = CFG.max_capture_seconds
         while True:
             await asyncio.sleep(0.2)
             if STARTED_AT and not STOPPING and time.time() - STARTED_AT > max_capture_seconds:
@@ -340,13 +331,13 @@ async def run_connected(host: str, psk: str) -> None:
 
 async def connection_loop(host: str, psk: str) -> None:
     """Reconnect forever so the Voice PE keeps a backend client instead of going red."""
-    reconnect_delay = float(os.environ.get("RECONNECT_INITIAL_SECONDS", "1"))
-    reconnect_max = float(os.environ.get("RECONNECT_MAX_SECONDS", "30"))
+    reconnect_delay = CFG.reconnect_initial_seconds
+    reconnect_max = CFG.reconnect_max_seconds
 
     while True:
         try:
             await run_connected(host, psk)
-            reconnect_delay = float(os.environ.get("RECONNECT_INITIAL_SECONDS", "1"))
+            reconnect_delay = CFG.reconnect_initial_seconds
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - deliberate service-style retry loop
@@ -356,10 +347,18 @@ async def connection_loop(host: str, psk: str) -> None:
 
 
 async def main() -> None:
-    global LOCAL_IP
-    load_env()
-    host = require("VOICE_HOST")
-    psk = require("VOICE_PSK")
+    global LOCAL_IP, CFG
+    CFG = load_config()
+
+    errors = CFG.validate()
+    if errors:
+        print("Configuration errors:", file=sys.stderr)
+        for err in errors:
+            print(f"  - {err}", file=sys.stderr)
+        raise SystemExit(1)
+
+    host = CFG.voice_host
+    psk = CFG.voice_psk
     LOCAL_IP = local_ip_for(host)
 
     runner = await start_http_server()
@@ -367,6 +366,175 @@ async def main() -> None:
         await connection_loop(host, psk)
     finally:
         await runner.cleanup()
+
+
+# ── Config Web UI handlers ───────────────────────────────────
+
+async def config_get(request: web.Request) -> web.Response:
+    """GET /config — return current config as JSON (secrets redacted)."""
+    reveal = request.query.get("reveal", "").lower() in ("1", "true", "yes")
+    return web.json_response(CFG.to_dict(reveal=reveal))
+
+
+async def config_put(request: web.Request) -> web.Response:
+    """PUT /config — update one or more config fields."""
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    updated: list[str] = []
+    errors: list[str] = []
+    for key, value in body.items():
+        try:
+            CFG.update(key, str(value))
+            updated.append(key)
+        except (KeyError, ValueError) as exc:
+            errors.append(f"{key}: {exc}")
+
+    if errors:
+        return web.json_response({"error": "Validation failed", "details": errors}, status=400)
+
+    CFG.save()
+    validation_errors = CFG.validate()
+    return web.json_response({
+        "ok": True,
+        "updated": updated,
+        "validation_errors": validation_errors,
+    })
+
+
+async def config_validate(request: web.Request) -> web.Response:
+    """POST /config/validate — validate current config without saving."""
+    errors = CFG.validate()
+    return web.json_response({"valid": len(errors) == 0, "errors": errors})
+
+
+async def config_reload(request: web.Request) -> web.Response:
+    """POST /config/reload — reload config from .env file."""
+    try:
+        global CFG
+        CFG = RelayConfig.load()
+        errors = CFG.validate()
+        return web.json_response({
+            "ok": True,
+            "message": "Config reloaded. Note: connection restart requires manual restart.",
+            "validation_errors": errors,
+        })
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+async def config_ui(request: web.Request) -> web.Response:
+    """GET / — simple HTML form to view and edit config."""
+    html = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenHAVoice Config</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font: 14px/1.5 system-ui, sans-serif; background: #0d1117; color: #c9d1d9;
+         max-width: 700px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { color: #58a6ff; margin-bottom: 1rem; }
+  section { margin-bottom: 2rem; }
+  h2 { color: #f0883e; font-size: 1rem; text-transform: uppercase;
+       letter-spacing: .05em; margin-bottom: .5rem; }
+  label { display: block; margin-bottom: .25rem; color: #8b949e; font-size: .85rem; }
+  input, textarea { width: 100%; padding: .5rem; background: #161b22; border: 1px solid #30363d;
+                    border-radius: 4px; color: #c9d1d9; font: inherit; margin-bottom: .75rem; }
+  textarea { resize: vertical; min-height: 3rem; }
+  button { background: #238636; color: #fff; border: none; padding: .5rem 1.5rem;
+           border-radius: 4px; cursor: pointer; font: inherit; }
+  button:hover { background: #2ea043; }
+  .secret input { -webkit-text-security: disc; }
+  .msg { padding: .5rem; border-radius: 4px; margin-bottom: 1rem; }
+  .msg.ok { background: #1a3a2a; color: #3fb950; }
+  .msg.err { background: #3a1a1a; color: #f85149; }
+</style>
+</head>
+<body>
+<h1>OpenHAVoice Configuration</h1>
+<div id="msg"></div>
+<form id="config-form">
+  <section>
+    <h2>Voice PE</h2>
+    <label>VOICE_HOST</label><input name="VOICE_HOST" required>
+    <label class="secret">VOICE_PSK</label><input name="VOICE_PSK" type="password" required>
+    <label class="secret">VOICE_PASSWORD</label><input name="VOICE_PASSWORD" type="password">
+  </section>
+  <section>
+    <h2>STT (Whisper)</h2>
+    <label>WHISPER_URL</label><input name="WHISPER_URL">
+    <label>LANGUAGE</label><input name="LANGUAGE">
+  </section>
+  <section>
+    <h2>TTS (Orpheus)</h2>
+    <label>ORPHEUS_URL</label><input name="ORPHEUS_URL">
+    <label>ORPHEUS_MODEL</label><input name="ORPHEUS_MODEL">
+    <label>ORPHEUS_VOICE</label><input name="ORPHEUS_VOICE">
+    <label>TTS_HOST</label><input name="TTS_HOST">
+    <label>TTS_PORT</label><input name="TTS_PORT" type="number">
+    <label>TTS_POST_PLAYBACK_GRACE_SECONDS</label><input name="TTS_POST_PLAYBACK_GRACE_SECONDS" type="number" step="0.1">
+  </section>
+  <section>
+    <h2>OpenClaw Gateway</h2>
+    <label>OPENCLAW_URL</label><input name="OPENCLAW_URL">
+    <label class="secret">OPENCLAW_TOKEN</label><input name="OPENCLAW_TOKEN" type="password">
+    <label>OPENCLAW_SESSION_KEY</label><input name="OPENCLAW_SESSION_KEY">
+    <label>OPENCLAW_MODEL</label><input name="OPENCLAW_MODEL">
+    <label>OPENCLAW_MESSAGE_CHANNEL</label><input name="OPENCLAW_MESSAGE_CHANNEL">
+    <label>System Prompt</label><textarea name="OPENCLAW_VOICE_SYSTEM_PROMPT"></textarea>
+  </section>
+  <section>
+    <h2>VAD / Capture</h2>
+    <label>MIN_SPEECH_MS</label><input name="MIN_SPEECH_MS" type="number">
+    <label>END_SILENCE_MS</label><input name="END_SILENCE_MS" type="number">
+    <label>MAX_CAPTURE_SECONDS</label><input name="MAX_CAPTURE_SECONDS" type="number" step="0.1">
+  </section>
+  <section>
+    <h2>Network / Reconnect</h2>
+    <label>RECONNECT_INITIAL_SECONDS</label><input name="RECONNECT_INITIAL_SECONDS" type="number" step="0.1">
+    <label>RECONNECT_MAX_SECONDS</label><input name="RECONNECT_MAX_SECONDS" type="number" step="0.1">
+  </section>
+  <button type="submit">Save Configuration</button>
+</form>
+<script>
+async function load() {
+  const r = await fetch('/config');
+  const cfg = await r.json();
+  const form = document.getElementById('config-form');
+  for (const [key, val] of Object.entries(cfg)) {
+    const el = form.elements[key.toUpperCase()];
+    if (el && val !== '****') el.value = val ?? '';
+  }
+}
+document.getElementById('config-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const form = e.target;
+  const data = {};
+  for (const el of form.elements) {
+    if (el.name) data[el.name] = el.value;
+  }
+  const r = await fetch('/config', { method: 'PUT',
+    headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) });
+  const result = await r.json();
+  const msg = document.getElementById('msg');
+  if (r.ok) {
+    msg.className = 'msg ok';
+    msg.textContent = '✓ Saved. ' + (result.validation_errors?.length
+      ? 'Warnings: ' + result.validation_errors.join('; ') : 'Config valid.');
+  } else {
+    msg.className = 'msg err';
+    msg.textContent = '✗ ' + (result.error || result.details?.join(', ') || 'Unknown error');
+  }
+});
+load();
+</script>
+</body>
+</html>"""
+    return web.Response(text=html, content_type="text/html")
 
 
 if __name__ == "__main__":
