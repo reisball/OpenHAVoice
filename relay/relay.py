@@ -206,6 +206,45 @@ class WyomingProtocol(asyncio.Protocol):
         self._transport.write(header + payload + audio_payload)
 
 
+async def main_async(args):
+    """Wire everything: Transcriber → OpenClaw → Synthesizer."""
+    transcriber = Transcriber(
+        api_key=os.environ["OPENAI_API_KEY"], model=args.stt_model
+    )
+    synthesizer = Synthesizer(
+        api_key=os.environ["ELEVENLABS_API_KEY"], voice=args.tts_voice
+    )
+    openclaw = OpenClawClient(
+        base_url=args.openclaw_url, token=args.openclaw_token
+    )
+
+    async def on_utterance(pcm: bytes) -> tuple[str, bytes]:
+        log.info("Transcribing %d bytes of PCM...", len(pcm))
+        transcript = transcriber.transcribe(pcm)
+        log.info("Transcript: %s", transcript)
+
+        log.info("Querying OpenClaw...")
+        response = await openclaw.chat(transcript)
+        log.info("Response: %s", response)
+
+        log.info("Synthesizing speech...")
+        tts_pcm = synthesizer.synthesize(response)
+        log.info("TTS: %d bytes PCM", len(tts_pcm))
+
+        return response, tts_pcm
+
+    loop = asyncio.get_running_loop()
+    server = await loop.create_server(
+        lambda: WyomingProtocol(on_utterance),
+        host=args.host,
+        port=args.port,
+    )
+    log.info("Relay listening on %s:%s", args.host, args.port)
+
+    async with server:
+        await server.serve_forever()
+
+
 def main():
     parser = argparse.ArgumentParser(description="OpenHAVoice Relay")
     parser.add_argument("--host", default="0.0.0.0")
@@ -224,6 +263,8 @@ def main():
 
     log.info("Starting relay on %s:%s", args.host, args.port)
     log.info("OpenClaw: %s", args.openclaw_url)
+
+    asyncio.run(main_async(args))
 
 
 if __name__ == "__main__":
