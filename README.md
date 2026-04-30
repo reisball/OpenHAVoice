@@ -4,7 +4,7 @@
 
 OpenHAVoice turns a stock Home Assistant Voice Preview Edition into a local voice front-end for OpenClaw/Zoe without using Home Assistant as the active voice backend.
 
-The important discovery: the Voice PE does **not** speak Wyoming directly. Stock firmware exposes voice sessions through the **ESPHome Native API** on port `6053`. A relay can connect with the device's Noise PSK, subscribe to the voice assistant stream, receive microphone PCM audio, run local STT/TTS, and send a playback URL back to the device.
+Stock Voice PE firmware exposes voice sessions through the **ESPHome Native API** on port `6053`. The relay connects with the device's Noise PSK, subscribes to the voice assistant stream, receives microphone PCM audio, runs local STT/TTS, and sends a playback URL back to the device.
 
 ## Current status
 
@@ -70,29 +70,11 @@ SERVE_TTS remote=192.168.50.146
                 ▼
          ┌────────────┐
          │ OpenClaw   │
-         │ next step  │
+         │ chat agent │
          └────────────┘
 ```
 
-## What changed from the original idea
-
-The previous Wyoming design was wrong for stock Voice PE firmware.
-
-Old assumption:
-
-```text
-Voice PE → Wyoming TCP relay
-```
-
-Actual working path:
-
-```text
-Voice PE → ESPHome Native API relay → STT/OpenClaw/TTS
-```
-
-Wyoming is still relevant inside the Home Assistant ecosystem for STT/TTS services, but the Voice PE itself does not present a direct Wyoming satellite interface to arbitrary relays.
-
-## Running the current proof-of-concept
+## Running the proof-of-concept
 
 ```bash
 cd relay
@@ -135,20 +117,10 @@ For current tests:
 - A device reboot may be needed after toggling HA integration state if the LED stays red and button sessions do not start.
 - The physical mute switch must be off.
 - The relay currently uses button-triggered sessions. Wake word behavior still needs explicit testing.
-- The relay currently returns a fixed TTS response after STT. OpenClaw chat integration is the next implementation step.
-
-## Next steps
-
-1. Replace the fixed response with an OpenClaw chat call.
-2. Keep per-device persistent session keys.
-3. Improve VAD/noise handling and timeout behavior.
-4. Add wake-word-specific tests.
-5. Package the relay as a service.
-6. Document safe HA disable/enable workflow.
+- The relay currently returns a fixed TTS response after STT; OpenClaw chat integration is tracked in the issue tracker.
 
 ## Security
 
 - Never commit the Voice PE Noise PSK.
 - Never commit OpenClaw tokens or service credentials.
 - `.env` is ignored and should stay local.
-

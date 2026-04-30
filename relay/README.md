@@ -2,7 +2,7 @@
 
 Current proof-of-concept relay for stock Home Assistant Voice PE firmware.
 
-This is **not** a Wyoming TCP server. It is an ESPHome Native API client using `aioesphomeapi`.
+The relay connects to the Voice PE through the ESPHome Native API using `aioesphomeapi`.
 
 ## Proven flow
 
@@ -59,4 +59,4 @@ The current relay uses a fixed response after STT:
 Test erfolgreich. Ich habe dich verstanden.
 ```
 
-The next step is replacing that with an OpenClaw conversation call.
+OpenClaw conversation integration is tracked in the issue tracker.
