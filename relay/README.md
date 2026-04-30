@@ -43,13 +43,15 @@ cp .env.example .env
 python relay.py
 ```
 
+The process stays connected as the active Voice PE backend and reconnects automatically if the device reboots or the TCP connection drops.
+
 Then press the Voice PE button and speak.
 
 ## Home Assistant interaction
 
 For direct tests, disable the HA ESPHome integration entry for the test Voice PE. Do not delete the device and do not flash firmware.
 
-If the device remains red and does not emit `START`, reboot the Voice PE and retry with HA still disabled.
+If the device remains red and does not emit `START`, make sure this relay is running and connected. If it still stays red, reboot the Voice PE and retry with HA still disabled.
 
 ## Current limitation
 

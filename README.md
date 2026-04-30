@@ -100,6 +100,8 @@ Then run:
 python relay.py
 ```
 
+The relay is intended to stay running as the active backend client. If the Voice PE reboots or drops the TCP connection, the relay reconnects automatically with backoff.
+
 For current tests:
 
 1. Disable the Home Assistant ESPHome integration entry for the test Voice PE.
@@ -114,7 +116,7 @@ For current tests:
 
 - Home Assistant can remain installed, but for direct relay testing its ESPHome connection to the test device must be disabled. Otherwise HA appears to own the voice assistant session.
 - Normal ESPHome entity reads can work while HA exists, but voice assistant audio did not reach the relay until HA was disabled for the device.
-- A device reboot may be needed after toggling HA integration state if the LED stays red and button sessions do not start.
+- A device reboot may be needed after toggling HA integration state if the LED stays red and button sessions do not start; the relay should then reconnect automatically.
 - The physical mute switch must be off.
 - The relay currently uses button-triggered sessions. Wake word behavior still needs explicit testing.
 - The relay currently returns a fixed TTS response after STT; OpenClaw chat integration is tracked in the issue tracker.

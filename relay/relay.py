@@ -244,35 +244,68 @@ async def on_stop(abort: bool) -> None:
     await finish("device_stop", abort)
 
 
+async def run_connected(host: str, psk: str) -> None:
+    """Hold one long-lived ESPHome API connection until it fails or is cancelled."""
+    global CLIENT, STARTED_AT, STOPPING
+
+    CLIENT = APIClient(host, 6053, os.environ.get("VOICE_PASSWORD", ""), noise_psk=psk)
+    unsubscribe = None
+    try:
+        await CLIENT.connect(login=True)
+        info = await CLIENT.device_info()
+        print(f"CONNECTED {info.name}. Backend client is active; press button and speak.", flush=True)
+        unsubscribe = CLIENT.subscribe_voice_assistant(
+            handle_start=on_start,
+            handle_stop=on_stop,
+            handle_audio=on_audio,
+        )
+
+        max_capture_seconds = float(os.environ.get("MAX_CAPTURE_SECONDS", "20"))
+        while True:
+            await asyncio.sleep(0.2)
+            if STARTED_AT and not STOPPING and time.time() - STARTED_AT > max_capture_seconds:
+                await finish("timeout")
+    finally:
+        if unsubscribe:
+            unsubscribe()
+        if CLIENT is not None:
+            try:
+                await CLIENT.disconnect()
+            except Exception as exc:  # noqa: BLE001 - reconnect loop handles recovery
+                print(f"WARN disconnect failed {exc!r}", flush=True)
+        CLIENT = None
+        STARTED_AT = None
+        STOPPING = False
+
+
+async def connection_loop(host: str, psk: str) -> None:
+    """Reconnect forever so the Voice PE keeps a backend client instead of going red."""
+    reconnect_delay = float(os.environ.get("RECONNECT_INITIAL_SECONDS", "1"))
+    reconnect_max = float(os.environ.get("RECONNECT_MAX_SECONDS", "30"))
+
+    while True:
+        try:
+            await run_connected(host, psk)
+            reconnect_delay = float(os.environ.get("RECONNECT_INITIAL_SECONDS", "1"))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - deliberate service-style retry loop
+            print(f"DISCONNECTED {type(exc).__name__}: {exc}; retrying in {reconnect_delay:.1f}s", flush=True)
+            await asyncio.sleep(reconnect_delay)
+            reconnect_delay = min(reconnect_delay * 2, reconnect_max)
+
+
 async def main() -> None:
-    global CLIENT, LOCAL_IP
+    global LOCAL_IP
     load_env()
     host = require("VOICE_HOST")
     psk = require("VOICE_PSK")
     LOCAL_IP = local_ip_for(host)
 
     runner = await start_http_server()
-    CLIENT = APIClient(host, 6053, os.environ.get("VOICE_PASSWORD", ""), noise_psk=psk)
-    await CLIENT.connect(login=True)
     try:
-        info = await CLIENT.device_info()
-        print(f"CONNECTED {info.name}. Press button, speak, then wait for playback.", flush=True)
-        unsubscribe = CLIENT.subscribe_voice_assistant(
-            handle_start=on_start,
-            handle_stop=on_stop,
-            handle_audio=on_audio,
-        )
-        try:
-            max_capture_seconds = float(os.environ.get("MAX_CAPTURE_SECONDS", "20"))
-            while True:
-                await asyncio.sleep(0.2)
-                if STARTED_AT and not STOPPING and time.time() - STARTED_AT > max_capture_seconds:
-                    await finish("timeout")
-        finally:
-            if unsubscribe:
-                unsubscribe()
+        await connection_loop(host, psk)
     finally:
-        await CLIENT.disconnect()
         await runner.cleanup()
 
 
