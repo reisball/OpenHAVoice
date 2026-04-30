@@ -1,0 +1,16 @@
+# Local config / secrets
+.env
+relay/.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Captured/generated audio
+*.wav
+*.mp3
+relay/roundtrip-*.wav
+relay/capture-*.wav
+relay/vad-*.wav

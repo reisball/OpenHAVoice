@@ -1,6 +1,5 @@
-openai>=1.0
-elevenlabs>=1.0
+aioesphomeapi>=24
+requests>=2.31
 aiohttp>=3.9
-
-# System dependency: ffmpeg (for MP3→PCM conversion)
-# sudo apt install ffmpeg
+webrtcvad>=2.0.10
+setuptools<81

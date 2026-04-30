@@ -1,56 +1,154 @@
 # OpenHAVoice
 
-**Home Assistant Voice PE → OpenClaw direct integration — no Home Assistant required.**
+**Home Assistant Voice PE → OpenClaw voice relay over the ESPHome Native API.**
 
-A voice satellite that streams audio directly to an OpenClaw-powered AI agent through a lightweight relay server.
+OpenHAVoice turns a stock Home Assistant Voice Preview Edition into a local voice front-end for OpenClaw/Zoe without using Home Assistant as the active voice backend.
+
+The important discovery: the Voice PE does **not** speak Wyoming directly. Stock firmware exposes voice sessions through the **ESPHome Native API** on port `6053`. A relay can connect with the device's Noise PSK, subscribe to the voice assistant stream, receive microphone PCM audio, run local STT/TTS, and send a playback URL back to the device.
+
+## Current status
+
+✅ Proven on real hardware with stock Voice PE firmware.
+
+Test device:
+
+- Device: `home-assistant-voice-0abf52`
+- Firmware/project: `Nabu Casa.Home Assistant Voice PE` `26.4.0`
+- ESPHome: `2026.3.2`
+- API: ESPHome Native API with Noise encryption
+- Home Assistant integration: temporarily disabled during direct relay tests
+
+Proven roundtrip:
+
+```text
+Voice PE button
+  → ESPHome Native API voice assistant session
+  → PCM audio streamed to relay
+  → local Whisper STT
+  → Orpheus/Jana TTS
+  → Voice PE fetches WAV from relay
+  → playback on the Voice PE speaker
+```
+
+Confirmed transcript from the successful roundtrip:
+
+```text
+Hallo Zoe, das ist ein weiterer Test. 1, 2, 3.
+```
+
+Confirmed playback request from the Voice PE:
+
+```text
+SERVE_TTS remote=192.168.50.146
+```
 
 ## Architecture
 
+```text
+┌────────────────────────────┐
+│ Home Assistant Voice PE    │
+│ stock ESPHome firmware     │
+│ button / wake word / mic   │
+└─────────────┬──────────────┘
+              │ ESPHome Native API :6053
+              │ VoiceAssistantRequest/Event/Audio
+              │ Noise encrypted
+              ▼
+┌────────────────────────────┐
+│ OpenHAVoice relay          │
+│ aioesphomeapi client       │
+│ VAD + HTTP WAV server      │
+└───────┬──────────────┬─────┘
+        │              │
+        ▼              ▼
+┌──────────────┐  ┌──────────────┐
+│ Whisper STT  │  │ Orpheus TTS  │
+│ local HTTP   │  │ Jana voice   │
+└──────┬───────┘  └──────┬───────┘
+       │                 │
+       └────────┬────────┘
+                ▼
+         ┌────────────┐
+         │ OpenClaw   │
+         │ next step  │
+         └────────────┘
 ```
-┌─────────────────────┐      Wyoming TCP       ┌──────────────────┐      HTTP       ┌──────────────────┐
-│   Voice PE HW       │ ──────────────────────▶ │   Relay Server   │ ──────────────▶ │  OpenClaw Gateway │
-│   (ESP32-S3/XMOS)   │ ◀────────────────────── │   (Python)       │ ◀────────────── │  (Friday et al.)  │
-└─────────────────────┘      PCM audio flow      └──────────────────┘                 └──────────────────┘
+
+## What changed from the original idea
+
+The previous Wyoming design was wrong for stock Voice PE firmware.
+
+Old assumption:
+
+```text
+Voice PE → Wyoming TCP relay
 ```
 
-**Flow:**
-1. Wake word detected on-device (microWakeWord, no cloud)
-2. Raw PCM audio streamed to Relay via [Wyoming protocol](https://github.com/rhasspy/wyoming)
-3. Relay transcribes audio (Whisper API / local)
-4. Transcript sent to OpenClaw Gateway (`POST /v1/chat/completions`)
-5. Agent response synthesized to speech (ElevenLabs / Piper)
-6. Audio streamed back to Voice PE for playback
+Actual working path:
 
-## Components
+```text
+Voice PE → ESPHome Native API relay → STT/OpenClaw/TTS
+```
 
-| Component | Location | Description |
-|-----------|----------|-------------|
-| **Voice PE firmware** | `firmware/` | ESPHome YAML — stock `voice_assistant` with Wyoming target override |
-| **Relay server** | `relay/` | Python Wyoming ↔ OpenClaw bridge |
-| **Docs** | `docs/` | Setup guide, hardware reference, pairing flow |
+Wyoming is still relevant inside the Home Assistant ecosystem for STT/TTS services, but the Voice PE itself does not present a direct Wyoming satellite interface to arbitrary relays.
 
-## Why Wyoming?
-
-- Stock ESPHome `voice_assistant` speaks Wyoming natively — no custom C++ component needed
-- Simple protocol: `[4-byte length][JSON header]` then raw PCM frames
-- Mature, tested in Home Assistant ecosystem
-
-## Quick Start
+## Running the current proof-of-concept
 
 ```bash
-# 1. Clone
-git clone http://192.168.50.70:3000/openclaw-org/OpenHAVoice.git
-cd OpenHAVoice
-
-# 2. Relay
 cd relay
+python3 -m venv .venv
+. .venv/bin/activate
 pip install -r requirements.txt
-python relay.py --openclaw http://192.168.50.186:18789
-
-# 3. Flash Voice PE firmware
-# See firmware/README.md
+cp .env.example .env
 ```
 
-## Status
+Edit `.env`:
 
-🚧 **Early development** — relay prototype in progress.
+```bash
+VOICE_HOST=192.168.50.x
+VOICE_PSK=base64-noise-psk-from-ha-esphome-config
+WHISPER_URL=http://192.168.50.51:8000/v1/audio/transcriptions
+ORPHEUS_URL=http://192.168.50.52:5005/v1/audio/speech
+TTS_PORT=8765
+```
+
+Then run:
+
+```bash
+python relay.py
+```
+
+For current tests:
+
+1. Disable the Home Assistant ESPHome integration entry for the test Voice PE.
+2. Do **not** delete the device.
+3. Do **not** flash firmware.
+4. Start the relay.
+5. Press the Voice PE button.
+6. Speak a short sentence.
+7. Wait for playback.
+
+## Notes and constraints
+
+- Home Assistant can remain installed, but for direct relay testing its ESPHome connection to the test device must be disabled. Otherwise HA appears to own the voice assistant session.
+- Normal ESPHome entity reads can work while HA exists, but voice assistant audio did not reach the relay until HA was disabled for the device.
+- A device reboot may be needed after toggling HA integration state if the LED stays red and button sessions do not start.
+- The physical mute switch must be off.
+- The relay currently uses button-triggered sessions. Wake word behavior still needs explicit testing.
+- The relay currently returns a fixed TTS response after STT. OpenClaw chat integration is the next implementation step.
+
+## Next steps
+
+1. Replace the fixed response with an OpenClaw chat call.
+2. Keep per-device persistent session keys.
+3. Improve VAD/noise handling and timeout behavior.
+4. Add wake-word-specific tests.
+5. Package the relay as a service.
+6. Document safe HA disable/enable workflow.
+
+## Security
+
+- Never commit the Voice PE Noise PSK.
+- Never commit OpenClaw tokens or service credentials.
+- `.env` is ignored and should stay local.
+

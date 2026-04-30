@@ -1,271 +1,280 @@
 #!/usr/bin/env python3
-"""OpenHAVoice Relay — Wyoming TCP ↔ OpenClaw Gateway bridge."""
+"""OpenHAVoice relay — stock Voice PE ↔ local STT/TTS over ESPHome Native API.
 
-import argparse
+This proof-of-concept intentionally uses the Voice PE stock ESPHome firmware.
+It does not implement Wyoming. The Voice PE voice assistant stream is exposed via
+ESPHome Native API on TCP/6053 and requires the device Noise PSK.
+"""
+
+from __future__ import annotations
+
 import asyncio
 import os
-import struct
+import socket
+import time
+import uuid
 import wave
-import io
-import json
-import sys
-import logging
+from pathlib import Path
 
-from openai import OpenAI
-
-import aiohttp
-
-from elevenlabs import ElevenLabs
-
-import subprocess
-import tempfile
-
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
-log = logging.getLogger("relay")
+import audioop
+import requests
+import webrtcvad
+from aioesphomeapi import APIClient, VoiceAssistantEventType as E
+from aiohttp import web
 
 
-def pcm_to_wav_bytes(
-    pcm: bytes, sample_rate: int = 16000, channels: int = 1, bits: int = 16
-) -> bytes:
-    """Convert raw PCM to WAV file bytes (in memory)."""
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as wf:
-        wf.setnchannels(channels)
-        wf.setsampwidth(bits // 8)
-        wf.setframerate(sample_rate)
-        wf.writeframes(pcm)
-    return buf.getvalue()
+BUFFER = bytearray()
+CLIENT: APIClient | None = None
+STARTED_AT: float | None = None
+STOPPING = False
+SPEECH_SEEN = False
+SILENT_MS = 0
+SPEECH_MS = 0
+TTS_FILES: dict[str, bytes] = {}
+LOCAL_IP = ""
+
+VAD = webrtcvad.Vad(2)
+FRAME_MS = 30
+FRAME_BYTES = int(16000 * 2 * FRAME_MS / 1000)
 
 
-class Transcriber:
-    """Speech-to-text via OpenAI Whisper API."""
+def load_env() -> None:
+    """Load KEY=value pairs from .env without overriding shell env vars."""
+    path = Path(__file__).with_name(".env")
+    if not path.exists():
+        return
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip("'\""))
 
-    def __init__(self, api_key: str, model: str = "whisper-1"):
-        self._client = OpenAI(api_key=api_key)
-        self._model = model
 
-    def transcribe(self, pcm: bytes) -> str:
-        """Transcribe raw PCM to text. Returns stripped transcript."""
-        wav = pcm_to_wav_bytes(pcm)
-        result = self._client.audio.transcriptions.create(
-            model=self._model,
-            file=("audio.wav", wav, "audio/wav"),
+def require(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise SystemExit(f"Missing {name}; copy .env.example to .env and configure it")
+    return value
+
+
+def local_ip_for(target: str) -> str:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect((target, 1))
+        return sock.getsockname()[0]
+    finally:
+        sock.close()
+
+
+def write_wav(path: Path, pcm: bytes) -> None:
+    with wave.open(str(path), "wb") as wav:
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(16000)
+        wav.writeframes(pcm)
+
+
+def transcribe(path: Path) -> str:
+    url = os.environ.get("WHISPER_URL", "http://192.168.50.51:8000/v1/audio/transcriptions")
+    language = os.environ.get("LANGUAGE", "de")
+    with path.open("rb") as handle:
+        response = requests.post(
+            url,
+            files={"file": (path.name, handle, "audio/wav")},
+            data={"model": "whisper-1", "language": language, "response_format": "json"},
+            timeout=90,
         )
-        return result.text.strip()
+    response.raise_for_status()
+    return response.json().get("text", "").strip()
 
 
-class OpenClawClient:
-    """Async HTTP client for OpenClaw Gateway chat completions."""
-
-    def __init__(self, base_url: str, token: str = ""):
-        self._url = base_url.rstrip("/") + "/v1/chat/completions"
-        self._token = token
-
-    async def chat(self, message: str, session_id: str = "voice-pe") -> str:
-        """Send message, return agent reply."""
-        headers = {"Content-Type": "application/json"}
-        if self._token:
-            headers["Authorization"] = f"Bearer {self._token}"
-        headers["x-openclaw-session-key"] = session_id
-
-        body = {
-            "model": "openclaw",
-            "messages": [{"role": "user", "content": message}],
-        }
-
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                self._url,
-                json=body,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total=120),
-            ) as resp:
-                data = await resp.json()
-                choices = data.get("choices", [])
-                if choices:
-                    return choices[0]["message"]["content"]
-                return "Sorry, I didn't understand."
+def synthesize(text: str) -> bytes:
+    url = os.environ.get("ORPHEUS_URL", "http://192.168.50.52:5005/v1/audio/speech")
+    payload = {
+        "model": os.environ.get("ORPHEUS_MODEL", "orpheus-german-fix"),
+        "voice": os.environ.get("ORPHEUS_VOICE", "jana"),
+        "input": text,
+    }
+    response = requests.post(url, json=payload, timeout=90)
+    response.raise_for_status()
+    return response.content
 
 
-class Synthesizer:
-    """Text-to-speech via ElevenLabs API → ffmpeg → PCM 16kHz/16bit/mono."""
+async def tts_handler(request: web.Request) -> web.Response:
+    token = request.match_info["token"]
+    data = TTS_FILES.pop(token, None)
+    if data is None:
+        return web.Response(status=404, text="gone")
+    print(f"SERVE_TTS token={token[:6]}…{token[-4:]} bytes={len(data)} remote={request.remote}", flush=True)
+    return web.Response(body=data, headers={"Content-Type": "audio/wav"})
 
-    def __init__(self, api_key: str, voice: str = "Rachel"):
-        self._client = ElevenLabs(api_key=api_key)
-        self._voice = voice
 
-    def synthesize(self, text: str) -> bytes:
-        """Synthesize text to raw PCM bytes."""
-        audio = self._client.generate(
-            text=text,
-            voice=self._voice,
-            model="eleven_multilingual_v2",
-        )
-        mp3_bytes = b"".join(audio)
+async def start_http_server() -> web.AppRunner:
+    app = web.Application()
+    app.router.add_get("/tts/{token}.wav", tts_handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    host = os.environ.get("TTS_HOST", "0.0.0.0")
+    port = int(os.environ.get("TTS_PORT", "8765"))
+    await web.TCPSite(runner, host, port).start()
+    print(f"HTTP_TTS http://{LOCAL_IP}:{port}", flush=True)
+    return runner
 
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
-            tmp.write(mp3_bytes)
-            mp3_path = tmp.name
 
+async def speak(text: str) -> None:
+    assert CLIENT is not None
+    loop = asyncio.get_running_loop()
+    audio = await loop.run_in_executor(None, synthesize, text)
+    token = uuid.uuid4().hex
+    TTS_FILES[token] = audio
+    port = int(os.environ.get("TTS_PORT", "8765"))
+    url = f"http://{LOCAL_IP}:{port}/tts/{token}.wav"
+    print(f"TTS_READY {url} bytes={len(audio)} text={text!r}", flush=True)
+    CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_TTS_START, {"text": text})
+    CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_TTS_END, {"url": url})
+
+
+async def finish(reason: str, abort: bool = False) -> None:
+    global STOPPING
+    assert CLIENT is not None
+    if STOPPING:
+        return
+    STOPPING = True
+
+    size = len(BUFFER)
+    print(
+        f"STOP reason={reason} abort={abort} bytes={size} seconds≈{size / 32000:.2f} "
+        f"speech_ms={SPEECH_MS} silent_ms={SILENT_MS}",
+        flush=True,
+    )
+
+    try:
+        CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_STT_VAD_END, None)
+    except Exception as exc:  # noqa: BLE001 - probe script should keep running
+        print(f"WARN vad_end failed {exc!r}", flush=True)
+
+    min_speech_ms = int(os.environ.get("MIN_SPEECH_MS", "300"))
+    if abort or size < 3200 or SPEECH_MS < min_speech_ms:
         try:
-            result = subprocess.run(
-                [
-                    "ffmpeg", "-i", mp3_path,
-                    "-f", "s16le", "-acodec", "pcm_s16le",
-                    "-ar", "16000", "-ac", "1", "-",
-                ],
-                capture_output=True,
-                check=True,
-            )
-            return result.stdout
-        finally:
-            os.unlink(mp3_path)
-
-
-class WyomingProtocol(asyncio.Protocol):
-    """Async protocol handler for one Voice PE connection."""
-
-    def __init__(self, on_utterance):
-        self._buffer = b""
-        self._audio_chunks: list[bytes] = []
-        self._on_utterance = on_utterance  # async callback(pcm) -> (text, pcm)
-        self._transport = None
-
-    def connection_made(self, transport):
-        self._transport = transport
-        peer = transport.get_extra_info("peername")
-        log.info("Voice PE connected from %s:%s", *peer)
-
-    def connection_lost(self, exc):
-        log.info("Voice PE disconnected")
-
-    def data_received(self, data: bytes):
-        self._buffer += data
-        self._parse_frames()
-
-    def _parse_frames(self):
-        while len(self._buffer) >= 4:
-            json_len = struct.unpack(">I", self._buffer[:4])[0]
-            frame_end = 4 + json_len
-            if len(self._buffer) < frame_end:
-                return  # incomplete header, wait for more data
-
-            try:
-                msg = json.loads(self._buffer[4:frame_end])
-            except json.JSONDecodeError:
-                log.warning("Invalid JSON in Wyoming frame")
-                self._buffer = self._buffer[frame_end:]
-                continue
-
-            audio_data = self._buffer[frame_end:]
-            self._buffer = b""
-            self._handle_message(msg, audio_data)
-
-    def _handle_message(self, msg: dict, audio_data: bytes):
-        msg_type = msg.get("type", "")
-
-        if msg_type == "describe":
-            log.info("Voice PE capabilities: %s", msg.get("data", {}))
-        elif msg_type == "audio":
-            if audio_data:
-                self._audio_chunks.append(audio_data)
-        elif msg_type == "audio-stop":
-            total_bytes = sum(len(c) for c in self._audio_chunks)
-            log.info(
-                "End of utterance — %d chunks, %d bytes",
-                len(self._audio_chunks),
-                total_bytes,
-            )
-            asyncio.ensure_future(self._process_utterance())
-
-    async def _process_utterance(self):
-        try:
-            pcm = b"".join(self._audio_chunks)
-            self._audio_chunks = []
-
-            response_text, tts_pcm = await self._on_utterance(pcm)
-
-            self._send_wyoming("synthesize", {"text": response_text})
-
-            # Stream PCM back in 1024-byte chunks (~32ms at 16kHz/16bit/mono)
-            for offset in range(0, len(tts_pcm), 1024):
-                chunk = tts_pcm[offset : offset + 1024]
-                self._send_wyoming(
-                    "audio",
-                    {"rate": 16000, "width": 2, "channels": 1},
-                    audio_payload=chunk,
-                )
+            CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_RUN_END, None)
         except Exception:
-            log.exception("Error processing utterance")
+            pass
+        return
 
-    def _send_wyoming(
-        self, msg_type: str, data: dict, audio_payload: bytes = b""
-    ):
-        payload = json.dumps({"type": msg_type, "data": data}).encode()
-        header = struct.pack(">I", len(payload))
-        self._transport.write(header + payload + audio_payload)
-
-
-async def main_async(args):
-    """Wire everything: Transcriber → OpenClaw → Synthesizer."""
-    transcriber = Transcriber(
-        api_key=os.environ["OPENAI_API_KEY"], model=args.stt_model
-    )
-    synthesizer = Synthesizer(
-        api_key=os.environ["ELEVENLABS_API_KEY"], voice=args.tts_voice
-    )
-    openclaw = OpenClawClient(
-        base_url=args.openclaw_url, token=args.openclaw_token
-    )
-
-    async def on_utterance(pcm: bytes) -> tuple[str, bytes]:
-        log.info("Transcribing %d bytes of PCM...", len(pcm))
-        transcript = transcriber.transcribe(pcm)
-        log.info("Transcript: %s", transcript)
-
-        log.info("Querying OpenClaw...")
-        response = await openclaw.chat(transcript)
-        log.info("Response: %s", response)
-
-        log.info("Synthesizing speech...")
-        tts_pcm = synthesizer.synthesize(response)
-        log.info("TTS: %d bytes PCM", len(tts_pcm))
-
-        return response, tts_pcm
+    wav_path = Path(__file__).with_name(f"roundtrip-{int(time.time())}.wav")
+    write_wav(wav_path, bytes(BUFFER))
+    print(f"WAV {wav_path}", flush=True)
 
     loop = asyncio.get_running_loop()
-    server = await loop.create_server(
-        lambda: WyomingProtocol(on_utterance),
-        host=args.host,
-        port=args.port,
+    try:
+        text = await loop.run_in_executor(None, transcribe, wav_path)
+        print(f"TRANSCRIPT {text!r}", flush=True)
+        CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_STT_END, {"text": text})
+        CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_INTENT_START, None)
+        CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_INTENT_END, None)
+
+        # TODO: replace fixed response with OpenClaw chat response.
+        await speak("Test erfolgreich. Ich habe dich verstanden.")
+        await asyncio.sleep(8)
+    except Exception as exc:  # noqa: BLE001
+        print(f"ROUNDTRIP_FAILED {exc!r}", flush=True)
+    finally:
+        try:
+            CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_RUN_END, None)
+        except Exception:
+            pass
+
+
+async def on_start(conversation_id, flags, audio_settings, wake_word_phrase):
+    global STARTED_AT, STOPPING, SPEECH_SEEN, SILENT_MS, SPEECH_MS
+    assert CLIENT is not None
+    BUFFER.clear()
+    STARTED_AT = time.time()
+    STOPPING = False
+    SPEECH_SEEN = False
+    SILENT_MS = 0
+    SPEECH_MS = 0
+    print(
+        f"START wake={wake_word_phrase!r} flags={flags} settings={audio_settings} conv={conversation_id!r}",
+        flush=True,
     )
-    log.info("Relay listening on %s:%s", args.host, args.port)
+    CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_RUN_START, None)
+    CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_STT_VAD_START, None)
+    CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_STT_START, None)
+    return 0  # API audio
 
-    async with server:
-        await server.serve_forever()
+
+async def on_audio(data: bytes) -> None:
+    global SPEECH_SEEN, SILENT_MS, SPEECH_MS
+    if STOPPING:
+        return
+    BUFFER.extend(data)
+    voiced_in_chunk = False
+    for offset in range(0, len(data) - FRAME_BYTES + 1, FRAME_BYTES):
+        frame = data[offset : offset + FRAME_BYTES]
+        try:
+            voiced = VAD.is_speech(frame, 16000)
+        except Exception:
+            continue
+        if voiced:
+            voiced_in_chunk = True
+            SPEECH_SEEN = True
+            SPEECH_MS += FRAME_MS
+            SILENT_MS = 0
+        elif SPEECH_SEEN:
+            SILENT_MS += FRAME_MS
+
+    if voiced_in_chunk and SPEECH_MS <= FRAME_MS * 3:
+        print("SPEECH_START", flush=True)
+    if len(BUFFER) % (32000 * 2) < len(data):
+        print(
+            f"AUDIO seconds≈{len(BUFFER) / 32000:.1f} speech_ms={SPEECH_MS} "
+            f"silent_ms={SILENT_MS} rms={audioop.rms(data, 2)}",
+            flush=True,
+        )
+
+    end_silence_ms = int(os.environ.get("END_SILENCE_MS", "900"))
+    min_speech_ms = int(os.environ.get("MIN_SPEECH_MS", "300"))
+    if SPEECH_SEEN and SPEECH_MS >= min_speech_ms and SILENT_MS >= end_silence_ms:
+        await finish("vad_silence")
 
 
-def main():
-    parser = argparse.ArgumentParser(description="OpenHAVoice Relay")
-    parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=10200)
-    parser.add_argument(
-        "--openclaw-url",
-        default=os.environ.get("OPENCLAW_URL", "http://192.168.50.186:18789"),
-    )
-    parser.add_argument(
-        "--openclaw-token",
-        default=os.environ.get("OPENCLAW_TOKEN", ""),
-    )
-    parser.add_argument("--stt-model", default="whisper-1")
-    parser.add_argument("--tts-voice", default="Rachel")
-    args = parser.parse_args()
+async def on_stop(abort: bool) -> None:
+    await finish("device_stop", abort)
 
-    log.info("Starting relay on %s:%s", args.host, args.port)
-    log.info("OpenClaw: %s", args.openclaw_url)
 
-    asyncio.run(main_async(args))
+async def main() -> None:
+    global CLIENT, LOCAL_IP
+    load_env()
+    host = require("VOICE_HOST")
+    psk = require("VOICE_PSK")
+    LOCAL_IP = local_ip_for(host)
+
+    runner = await start_http_server()
+    CLIENT = APIClient(host, 6053, os.environ.get("VOICE_PASSWORD", ""), noise_psk=psk)
+    await CLIENT.connect(login=True)
+    try:
+        info = await CLIENT.device_info()
+        print(f"CONNECTED {info.name}. Press button, speak, then wait for playback.", flush=True)
+        unsubscribe = CLIENT.subscribe_voice_assistant(
+            handle_start=on_start,
+            handle_stop=on_stop,
+            handle_audio=on_audio,
+        )
+        try:
+            max_capture_seconds = float(os.environ.get("MAX_CAPTURE_SECONDS", "20"))
+            while True:
+                await asyncio.sleep(0.2)
+                if STARTED_AT and not STOPPING and time.time() - STARTED_AT > max_capture_seconds:
+                    await finish("timeout")
+        finally:
+            if unsubscribe:
+                unsubscribe()
+    finally:
+        await CLIENT.disconnect()
+        await runner.cleanup()
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
