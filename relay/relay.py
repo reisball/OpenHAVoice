@@ -15,6 +15,11 @@ from openai import OpenAI
 
 import aiohttp
 
+from elevenlabs import ElevenLabs
+
+import subprocess
+import tempfile
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 log = logging.getLogger("relay")
 
@@ -80,6 +85,41 @@ class OpenClawClient:
                 if choices:
                     return choices[0]["message"]["content"]
                 return "Sorry, I didn't understand."
+
+
+class Synthesizer:
+    """Text-to-speech via ElevenLabs API → ffmpeg → PCM 16kHz/16bit/mono."""
+
+    def __init__(self, api_key: str, voice: str = "Rachel"):
+        self._client = ElevenLabs(api_key=api_key)
+        self._voice = voice
+
+    def synthesize(self, text: str) -> bytes:
+        """Synthesize text to raw PCM bytes."""
+        audio = self._client.generate(
+            text=text,
+            voice=self._voice,
+            model="eleven_multilingual_v2",
+        )
+        mp3_bytes = b"".join(audio)
+
+        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:
+            tmp.write(mp3_bytes)
+            mp3_path = tmp.name
+
+        try:
+            result = subprocess.run(
+                [
+                    "ffmpeg", "-i", mp3_path,
+                    "-f", "s16le", "-acodec", "pcm_s16le",
+                    "-ar", "16000", "-ac", "1", "-",
+                ],
+                capture_output=True,
+                check=True,
+            )
+            return result.stdout
+        finally:
+            os.unlink(mp3_path)
 
 
 class WyomingProtocol(asyncio.Protocol):
