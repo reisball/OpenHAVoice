@@ -1,0 +1,17 @@
+[Unit]
+Description=OpenHAVoice Voice PE relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/projects/OpenHAVoice/relay
+EnvironmentFile=%h/.config/openhavoice/relay.env
+ExecStart=%h/projects/OpenHAVoice/relay/.venv/bin/python %h/projects/OpenHAVoice/relay/relay.py
+Restart=always
+RestartSec=5
+
+# Keep logs in the user journal: journalctl --user -u openhavoice-relay -f
+
+[Install]
+WantedBy=default.target
