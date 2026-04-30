@@ -11,6 +11,8 @@ import json
 import sys
 import logging
 
+from openai import OpenAI
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 log = logging.getLogger("relay")
 
@@ -26,6 +28,23 @@ def pcm_to_wav_bytes(
         wf.setframerate(sample_rate)
         wf.writeframes(pcm)
     return buf.getvalue()
+
+
+class Transcriber:
+    """Speech-to-text via OpenAI Whisper API."""
+
+    def __init__(self, api_key: str, model: str = "whisper-1"):
+        self._client = OpenAI(api_key=api_key)
+        self._model = model
+
+    def transcribe(self, pcm: bytes) -> str:
+        """Transcribe raw PCM to text. Returns stripped transcript."""
+        wav = pcm_to_wav_bytes(pcm)
+        result = self._client.audio.transcriptions.create(
+            model=self._model,
+            file=("audio.wav", wav, "audio/wav"),
+        )
+        return result.text.strip()
 
 
 class WyomingProtocol(asyncio.Protocol):
