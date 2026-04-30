@@ -1,3 +1,6 @@
 openai>=1.0
 elevenlabs>=1.0
 aiohttp>=3.9
+
+# System dependency: ffmpeg (for MP3→PCM conversion)
+# sudo apt install ffmpeg
