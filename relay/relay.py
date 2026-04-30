@@ -101,6 +101,50 @@ def synthesize(text: str) -> bytes:
     return response.content
 
 
+def openclaw_chat(message: str) -> str:
+    url = os.environ.get("OPENCLAW_URL", "http://127.0.0.1:18789").rstrip("/")
+    if not url.endswith("/v1/chat/completions"):
+        url = url + "/v1/chat/completions"
+
+    headers = {"Content-Type": "application/json"}
+    token = os.environ.get("OPENCLAW_TOKEN", "")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+
+    session_key = os.environ.get("OPENCLAW_SESSION_KEY", "voice-pe")
+    if session_key:
+        headers["x-openclaw-session-key"] = session_key
+
+    channel = os.environ.get("OPENCLAW_MESSAGE_CHANNEL", "voice")
+    if channel:
+        headers["x-openclaw-message-channel"] = channel
+
+    system_prompt = os.environ.get(
+        "OPENCLAW_VOICE_SYSTEM_PROMPT",
+        "Du antwortest als Zoe über einen Voice Assistant. Antworte kurz, natürlich "
+        "und ohne Markdown, Listen oder Emojis. Ein bis zwei Sätze reichen.",
+    )
+    payload = {
+        "model": os.environ.get("OPENCLAW_MODEL", "openclaw/default"),
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": message},
+        ],
+        "stream": False,
+    }
+
+    response = requests.post(url, json=payload, headers=headers, timeout=120)
+    response.raise_for_status()
+    data = response.json()
+    choices = data.get("choices") or []
+    if not choices:
+        raise RuntimeError("OpenClaw returned no choices")
+    text = (choices[0].get("message") or {}).get("content", "").strip()
+    if not text:
+        raise RuntimeError("OpenClaw returned an empty message")
+    return text
+
+
 async def tts_handler(request: web.Request) -> web.Response:
     token = request.match_info["token"]
     data = TTS_FILES.pop(token, None)
@@ -174,8 +218,9 @@ async def finish(reason: str, abort: bool = False) -> None:
         CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_INTENT_START, None)
         CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_INTENT_END, None)
 
-        # TODO: replace fixed response with OpenClaw chat response.
-        await speak("Test erfolgreich. Ich habe dich verstanden.")
+        response_text = await loop.run_in_executor(None, openclaw_chat, text)
+        print(f"OPENCLAW_REPLY {response_text!r}", flush=True)
+        await speak(response_text)
         await asyncio.sleep(8)
     except Exception as exc:  # noqa: BLE001
         print(f"ROUNDTRIP_FAILED {exc!r}", flush=True)

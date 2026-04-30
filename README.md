@@ -92,6 +92,9 @@ VOICE_PSK=base64-noise-psk-from-ha-esphome-config
 WHISPER_URL=http://192.168.50.51:8000/v1/audio/transcriptions
 ORPHEUS_URL=http://192.168.50.52:5005/v1/audio/speech
 TTS_PORT=8765
+OPENCLAW_URL=http://127.0.0.1:18789
+OPENCLAW_TOKEN=...
+OPENCLAW_SESSION_KEY=voice-pe
 ```
 
 Then run:
@@ -119,7 +122,7 @@ For current tests:
 - A device reboot may be needed after toggling HA integration state if the LED stays red and button sessions do not start; the relay should then reconnect automatically.
 - The physical mute switch must be off.
 - The relay currently uses button-triggered sessions. Wake word behavior still needs explicit testing.
-- The relay currently returns a fixed TTS response after STT; OpenClaw chat integration is tracked in the issue tracker.
+- The relay sends each transcript to OpenClaw Chat Completions and speaks the returned assistant text.
 
 ## Security
 

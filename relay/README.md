@@ -13,7 +13,8 @@ Voice PE button
   → VAD detects end of speech
   → relay writes WAV
   → relay sends WAV to Whisper STT
-  → relay synthesizes fixed response through Orpheus/Jana
+  → relay sends transcript to OpenClaw Chat Completions
+  → relay synthesizes OpenClaw response through Orpheus/Jana
   → relay exposes WAV over HTTP
   → relay sends TTS_START/TTS_END events with URL
   → Voice PE downloads and plays the WAV
@@ -53,12 +54,6 @@ For direct tests, disable the HA ESPHome integration entry for the test Voice PE
 
 If the device remains red and does not emit `START`, make sure this relay is running and connected. If it still stays red, reboot the Voice PE and retry with HA still disabled.
 
-## Current limitation
+## OpenClaw integration
 
-The current relay uses a fixed response after STT:
-
-```text
-Test erfolgreich. Ich habe dich verstanden.
-```
-
-OpenClaw conversation integration is tracked in the issue tracker.
+The relay uses OpenClaw's OpenAI-compatible Chat Completions endpoint. Configure `OPENCLAW_URL`, `OPENCLAW_TOKEN`, `OPENCLAW_MODEL`, and `OPENCLAW_SESSION_KEY` in `.env`.
