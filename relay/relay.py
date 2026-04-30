@@ -101,6 +101,15 @@ def synthesize(text: str) -> bytes:
     return response.content
 
 
+def session_key_for_device(device_name: str | None = None) -> str:
+    configured = os.environ.get("OPENCLAW_SESSION_KEY", "").strip()
+    if configured:
+        return configured
+    suffix = (device_name or os.environ.get("VOICE_HOST", "voice-pe")).strip()
+    safe = "".join(ch if ch.isalnum() or ch in "._:-" else "-" for ch in suffix).strip("-")
+    return f"openhavoice:{safe or 'voice-pe'}"
+
+
 def openclaw_chat(message: str) -> str:
     url = os.environ.get("OPENCLAW_URL", "http://127.0.0.1:18789").rstrip("/")
     if not url.endswith("/v1/chat/completions"):
@@ -111,9 +120,8 @@ def openclaw_chat(message: str) -> str:
     if token:
         headers["Authorization"] = f"Bearer {token}"
 
-    session_key = os.environ.get("OPENCLAW_SESSION_KEY", "voice-pe")
-    if session_key:
-        headers["x-openclaw-session-key"] = session_key
+    session_key = session_key_for_device(os.environ.get("OPENHAVOICE_DEVICE_NAME"))
+    headers["x-openclaw-session-key"] = session_key
 
     channel = os.environ.get("OPENCLAW_MESSAGE_CHANNEL", "voice")
     if channel:
@@ -298,7 +306,12 @@ async def run_connected(host: str, psk: str) -> None:
     try:
         await CLIENT.connect(login=True)
         info = await CLIENT.device_info()
-        print(f"CONNECTED {info.name}. Backend client is active; press button and speak.", flush=True)
+        os.environ["OPENHAVOICE_DEVICE_NAME"] = info.name
+        print(
+            f"CONNECTED {info.name}. Backend client is active; "
+            f"session={session_key_for_device(info.name)!r}; press button and speak.",
+            flush=True,
+        )
         unsubscribe = CLIENT.subscribe_voice_assistant(
             handle_start=on_start,
             handle_stop=on_stop,

@@ -94,7 +94,8 @@ ORPHEUS_URL=http://192.168.50.52:5005/v1/audio/speech
 TTS_PORT=8765
 OPENCLAW_URL=http://127.0.0.1:18789
 OPENCLAW_TOKEN=...
-OPENCLAW_SESSION_KEY=voice-pe
+# optional; empty means openhavoice:<device-name>
+OPENCLAW_SESSION_KEY=
 ```
 
 Then run:
@@ -123,6 +124,7 @@ For current tests:
 - The physical mute switch must be off.
 - The relay currently uses button-triggered sessions. Wake word behavior still needs explicit testing.
 - The relay sends each transcript to OpenClaw Chat Completions and speaks the returned assistant text.
+- By default, each Voice PE uses a dedicated persistent session key: `openhavoice:<device-name>`.
 
 ## Security
 
