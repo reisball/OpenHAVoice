@@ -15,6 +15,19 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message
 log = logging.getLogger("relay")
 
 
+def pcm_to_wav_bytes(
+    pcm: bytes, sample_rate: int = 16000, channels: int = 1, bits: int = 16
+) -> bytes:
+    """Convert raw PCM to WAV file bytes (in memory)."""
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(channels)
+        wf.setsampwidth(bits // 8)
+        wf.setframerate(sample_rate)
+        wf.writeframes(pcm)
+    return buf.getvalue()
+
+
 class WyomingProtocol(asyncio.Protocol):
     """Async protocol handler for one Voice PE connection."""
 
