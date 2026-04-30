@@ -13,6 +13,8 @@ import logging
 
 from openai import OpenAI
 
+import aiohttp
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(name)s] %(message)s")
 log = logging.getLogger("relay")
 
@@ -45,6 +47,39 @@ class Transcriber:
             file=("audio.wav", wav, "audio/wav"),
         )
         return result.text.strip()
+
+
+class OpenClawClient:
+    """Async HTTP client for OpenClaw Gateway chat completions."""
+
+    def __init__(self, base_url: str, token: str = ""):
+        self._url = base_url.rstrip("/") + "/v1/chat/completions"
+        self._token = token
+
+    async def chat(self, message: str, session_id: str = "voice-pe") -> str:
+        """Send message, return agent reply."""
+        headers = {"Content-Type": "application/json"}
+        if self._token:
+            headers["Authorization"] = f"Bearer {self._token}"
+        headers["x-openclaw-session-key"] = session_id
+
+        body = {
+            "model": "openclaw",
+            "messages": [{"role": "user", "content": message}],
+        }
+
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                self._url,
+                json=body,
+                headers=headers,
+                timeout=aiohttp.ClientTimeout(total=120),
+            ) as resp:
+                data = await resp.json()
+                choices = data.get("choices", [])
+                if choices:
+                    return choices[0]["message"]["content"]
+                return "Sorry, I didn't understand."
 
 
 class WyomingProtocol(asyncio.Protocol):
