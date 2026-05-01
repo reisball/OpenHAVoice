@@ -729,6 +729,9 @@ async function reloadConfig() {{
   if (!r.ok) {{ msg('✗ ' + (result.error || 'Reload failed'), 'err'); return; }}
   msg('✓ Reloaded from file'); await loadConfig();
 }}
+function formatDateTime(ts) {{
+  return new Date(ts * 1000).toLocaleString([], {{ dateStyle: 'short', timeStyle: 'medium' }});
+}}
 function formatDuration(seconds) {{
   if (seconds == null) return '—';
   seconds = Math.max(0, Math.floor(seconds));
@@ -748,7 +751,7 @@ async function updateDeviceOverview() {{
     document.getElementById('dv-status').style.color = s.connected ? 'var(--green)' : 'var(--red)';
     document.getElementById('dv-sessions').textContent = s.total_sessions || 0;
     document.getElementById('svc-start').textContent = s.service_started_at
-      ? new Date(s.service_started_at * 1000).toLocaleTimeString()
+      ? formatDateTime(s.service_started_at)
       : '—';
     document.getElementById('svc-uptime').textContent = formatDuration(s.service_uptime_sec);
     document.getElementById('dv-last').textContent = s.last_session_at
