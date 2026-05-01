@@ -574,6 +574,7 @@ async def config_ui(request: web.Request) -> web.Response:
   h2 {{ color: var(--orange); font-size: .85rem; text-transform: uppercase; letter-spacing: .08em; margin: 0 0 14px; }}
   .fields {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }}
   .field.full {{ grid-column: 1 / -1; }}
+  .field.spacer {{ visibility: hidden; }}
   .section-divider {{ grid-column: 1 / -1; border-top: 1px solid var(--line); margin: 4px 0 2px; padding-top: 12px; color: var(--orange); font-size: .72rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }}
   label {{ display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: .76rem; font-weight: 700; letter-spacing: .04em; margin-bottom: 5px; }}
   .current {{ color: var(--blue); font-weight: 600; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; letter-spacing: 0; }}
@@ -622,11 +623,14 @@ async def config_ui(request: web.Request) -> web.Response:
       <div class="field"><label>Status</label><span id="dv-status" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
       <div class="field"><label>Sessions</label><span id="dv-sessions" class="current" style="max-width:100%;font-size:1rem;">0</span></div>
       <div class="field"><label>Last In</label><span id="dv-in-at" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
-      <div class="field"><label>In Duration</label><span id="dv-in-duration" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
+      <div class="field"><label>Duration</label><span id="dv-in-duration" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
+      <div class="field spacer" aria-hidden="true"></div>
       <div class="field"><label>Last Out</label><span id="dv-out-at" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
-      <div class="field"><label>Out Duration</label><span id="dv-out-duration" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
+      <div class="field"><label>Duration</label><span id="dv-out-duration" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
+      <div class="field spacer" aria-hidden="true"></div>
       <div class="field"><label>Turn Duration</label><span id="dv-turn-duration" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
       <div class="field"><label>Last Stop</label><span id="dv-stop" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
+      <div class="field spacer" aria-hidden="true"></div>
     </div>
   </div>
 
