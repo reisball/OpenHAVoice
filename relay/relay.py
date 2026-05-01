@@ -775,9 +775,12 @@ async def config_ui(request: web.Request) -> web.Response:
   label {{ display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: .76rem; font-weight: 700; letter-spacing: .04em; margin-bottom: 5px; }}
   .current {{ color: var(--blue); font-weight: 600; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; letter-spacing: 0; }}
   input, textarea, select {{ width: 100%; padding: 9px 10px; background: #0d1117; border: 1px solid var(--line); border-radius: 8px; color: var(--text); font: inherit; }}
+  input[type="checkbox"] {{ width: auto; padding: 0; margin: 0; accent-color: var(--green); transform: scale(1.05); }}
   input:focus, textarea:focus, select:focus {{ outline: none; border-color: var(--blue); box-shadow: 0 0 0 2px #58a6ff33; }}
   textarea {{ resize: vertical; min-height: 82px; }}
   .hint {{ color: var(--muted); font-size: .76rem; margin-top: 4px; }}
+  .check-label {{ justify-content: flex-start; align-items: center; gap: 8px; margin-bottom: 4px; }}
+  #voice-device-status {{ max-width: 100%; white-space: normal; overflow: visible; text-overflow: clip; }}
   .hint code {{ color: #d2a8ff; background: #111722; padding: 1px 4px; border-radius: 4px; }}
   .actions {{ display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }}
   button {{ background: #238636; color: #fff; border: 0; padding: 9px 14px; border-radius: 8px; cursor: pointer; font: inherit; font-weight: 700; }}
@@ -854,9 +857,9 @@ async def config_ui(request: web.Request) -> web.Response:
           <div class="field"><label>Host / IP</label><input id="voice-device-host" placeholder="192.168.50.xxx"></div>
           <div class="field"><label>Noise PSK</label><input id="voice-device-psk" type="password" placeholder="leave blank to keep existing"></div>
           <div class="field"><label>Password</label><input id="voice-device-password" type="password" placeholder="optional / leave blank"></div>
-          <div class="field"><label>Status</label><span id="voice-device-status" class="current">—</span></div>
-          <div class="field"><label><input id="voice-device-enabled" type="checkbox"> Enabled</label><div class="hint">Connection changes need relay restart.</div></div>
-          <div class="field"><label><input id="voice-device-active" type="checkbox"> Active device</label><div class="hint">Save marks this device as active.</div></div>
+          <div class="field full"><label>Status</label><span id="voice-device-status" class="current">—</span></div>
+          <div class="field"><label class="check-label"><input id="voice-device-enabled" type="checkbox"> Enabled</label><div class="hint">Connection changes need relay restart.</div></div>
+          <div class="field"><label class="check-label"><input id="voice-device-active" type="checkbox"> Default target</label><div class="hint">Saves this device into the low-level VOICE_HOST config.</div></div>
         </div>
         <div class="actions">
           <button class="secondary" type="button" id="voice-device-add">Add new device</button>
@@ -1005,7 +1008,7 @@ function renderDevices() {{
   for (const d of voiceDevices) {{
     const opt = document.createElement('option');
     opt.value = d.host;
-    opt.textContent = `${{d.name || d.host}} (${{d.host}})${{d.active ? ' — active' : ''}}`;
+    opt.textContent = `${{d.name || d.host}} (${{d.host}})${{d.active ? ' — default' : ''}}`;
     select.appendChild(opt);
   }}
   if (!voiceDevices.some(d => d.host === selectedDeviceHost)) selectedDeviceHost = voiceDevices[0].host;
@@ -1021,7 +1024,7 @@ function fillSelectedDevice(d) {{
   document.getElementById('voice-device-active').checked = d ? !!d.active : false;
   const [label, cls] = deviceStatusLabel(d);
   const status = document.getElementById('voice-device-status');
-  status.textContent = d ? `${{label}}${{d.active ? ' · Active' : ''}} · PSK ${{d.psk ? 'configured' : 'missing'}} · Password ${{d.password ? 'configured' : 'empty'}}` : '—';
+  status.textContent = d ? `${{label}}${{d.active ? ' · Default target' : ''}} · PSK ${{d.psk ? 'configured' : 'missing'}} · Password ${{d.password ? 'configured' : 'empty'}}` : '—';
   status.style.color = cls === 'on' ? 'var(--green)' : (cls === 'off' ? 'var(--red)' : '');
 }}
 function openDeviceDialog() {{
