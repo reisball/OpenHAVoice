@@ -47,6 +47,7 @@ LOW_RMS_MS = 0
 TTS_FILES: dict[str, bytes] = {}
 LOCAL_IP = ""
 SERVICE_STARTED_AT = time.time()
+DEVICE_STATUS: dict[str, dict[str, object]] = {}
 
 # Device Overview stats (in-memory, reset on restart)
 STATS: dict[str, object] = {
@@ -120,7 +121,8 @@ def synthesize(text: str) -> bytes:
 
 def session_key_for_device(device_name: str | None = None) -> str:
     configured = CFG.openclaw_session_key.strip()
-    if configured:
+    multi_device = len(_enabled_connection_devices()) > 1 if CFG is not None else False
+    if configured and not multi_device:
         return configured
     suffix = (device_name or CFG.voice_host).strip()
     safe = "".join(ch if ch.isalnum() or ch in "._:-" else "-" for ch in suffix).strip("-")
@@ -200,6 +202,7 @@ def _load_voice_devices(reveal: bool = False) -> list[dict[str, str]]:
             "host": host,
             "psk": str(item.get("psk", "")),
             "password": str(item.get("password", "")),
+            "enabled": bool(item.get("enabled", True)),
         }
         if not reveal:
             device["psk"] = "****" if device["psk"] else ""
@@ -217,9 +220,13 @@ async def devices_get(request: web.Request) -> web.Response:
     denied = _require_config_auth(request)
     if denied is not None:
         return denied
+    devices = _load_voice_devices(reveal=False)
+    for device in devices:
+        device.update(DEVICE_STATUS.get(device["host"], {}))
+        device["active"] = device["host"] == CFG.voice_host
     return web.json_response({
         "active_host": CFG.voice_host,
-        "devices": _load_voice_devices(reveal=False),
+        "devices": devices,
     })
 
 
@@ -233,31 +240,48 @@ async def devices_put(request: web.Request) -> web.Response:
     except json.JSONDecodeError:
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
-    name = str(body.get("name", "")).strip()
+    action = str(body.get("action", "save")).strip().lower()
     host = str(body.get("host", "")).strip()
-    psk = str(body.get("psk", "")).strip()
-    password = str(body.get("password", "")).strip()
-    activate = bool(body.get("activate", False))
     if not host:
         return web.json_response({"error": "host is required"}, status=400)
 
     devices = _load_voice_devices(reveal=True)
     existing = next((d for d in devices if d.get("host") == host), None)
+
+    if action == "delete":
+        devices = [d for d in devices if d.get("host") != host]
+        if CFG.voice_host == host:
+            replacement = next((d for d in devices if d.get("enabled", True) and d.get("psk")), None)
+            CFG.voice_host = replacement.get("host", "") if replacement else ""
+            CFG.voice_psk = replacement.get("psk", "") if replacement else ""
+            CFG.voice_password = replacement.get("password", "") if replacement else ""
+        _save_voice_devices(devices)
+        return web.json_response({"ok": True, "active_host": CFG.voice_host, "devices": _load_voice_devices(reveal=False), "restart_required": True})
+
     if existing is None:
+        psk = str(body.get("psk", "")).strip()
         if not psk:
             return web.json_response({"error": "psk is required for new devices"}, status=400)
-        existing = {"name": name or host, "host": host, "psk": psk, "password": password}
+        existing = {"name": host, "host": host, "psk": psk, "password": "", "enabled": True}
         devices.append(existing)
-    else:
-        existing["name"] = name or existing.get("name") or host
-        if psk and psk != "****":
-            existing["psk"] = psk
-        if password and password != "****":
-            existing["password"] = password
+
+    name = str(body.get("name", "")).strip()
+    psk = str(body.get("psk", "")).strip()
+    password = str(body.get("password", "")).strip()
+    activate = bool(body.get("activate", False))
+    if name:
+        existing["name"] = name
+    if psk and psk != "****":
+        existing["psk"] = psk
+    if password and password != "****":
+        existing["password"] = password
+    if "enabled" in body:
+        existing["enabled"] = bool(body.get("enabled"))
 
     if activate:
         if not existing.get("psk"):
             return web.json_response({"error": "selected device has no psk"}, status=400)
+        existing["enabled"] = True
         CFG.voice_host = existing["host"]
         CFG.voice_psk = existing["psk"]
         CFG.voice_password = existing.get("password", "")
@@ -267,12 +291,29 @@ async def devices_put(request: web.Request) -> web.Response:
             pass
 
     _save_voice_devices(devices)
+    redacted = _load_voice_devices(reveal=False)
+    for device in redacted:
+        device.update(DEVICE_STATUS.get(device["host"], {}))
+        device["active"] = device["host"] == CFG.voice_host
     return web.json_response({
         "ok": True,
         "active_host": CFG.voice_host,
-        "devices": _load_voice_devices(reveal=False),
-        "restart_required": activate,
+        "devices": redacted,
+        "restart_required": activate or action in {"delete"},
     })
+
+async def restart_handler(request: web.Request) -> web.Response:
+    denied = _require_config_auth(request)
+    if denied is not None:
+        return denied
+
+    async def delayed_restart() -> None:
+        await asyncio.sleep(0.5)
+        proc = await asyncio.create_subprocess_shell("systemctl --user restart openhavoice-relay.service")
+        await proc.communicate()
+
+    asyncio.create_task(delayed_restart())
+    return web.json_response({"ok": True, "message": "Relay restart scheduled"})
 
 
 async def start_http_server() -> web.AppRunner:
@@ -281,6 +322,7 @@ async def start_http_server() -> web.AppRunner:
     app.router.add_get("/api/status", status_handler)
     app.router.add_get("/api/devices", devices_get)
     app.router.add_put("/api/devices", devices_put)
+    app.router.add_post("/api/restart", restart_handler)
 
     # Config Web UI routes
     app.router.add_get("/config", config_get)
@@ -457,65 +499,112 @@ async def on_stop(abort: bool) -> None:
     await finish("device_stop", abort)
 
 
-async def run_connected(host: str, psk: str) -> None:
+async def run_connected(device: dict[str, str]) -> None:
     """Hold one long-lived ESPHome API connection until it fails or is cancelled."""
     global CLIENT, STARTED_AT, STOPPING
-    STATS["device_name"] = None
-    STATS["connected"] = False
+    host = device["host"]
+    psk = device["psk"]
+    password = device.get("password", "")
+    name_hint = device.get("name") or host
+    DEVICE_STATUS[host] = {"online": False, "connected": False, "status": "connecting", "name": name_hint}
 
-    CLIENT = APIClient(host, 6053, CFG.voice_password, noise_psk=psk)
+    client = APIClient(host, 6053, password, noise_psk=psk)
     unsubscribe = None
+
+    def mark_current_device() -> None:
+        global CLIENT
+        CLIENT = client
+        os.environ["OPENHAVOICE_DEVICE_NAME"] = str(DEVICE_STATUS.get(host, {}).get("name") or name_hint)
+
+    async def wrap_start(conversation_id, flags, audio_settings, wake_word_phrase):
+        mark_current_device()
+        return await on_start(conversation_id, flags, audio_settings, wake_word_phrase)
+
+    async def wrap_stop(abort: bool):
+        mark_current_device()
+        await on_stop(abort)
+
+    async def wrap_audio(data: bytes):
+        mark_current_device()
+        await on_audio(data)
+
     try:
-        await CLIENT.connect(login=True)
-        info = await CLIENT.device_info()
+        await client.connect(login=True)
+        info = await client.device_info()
         os.environ["OPENHAVOICE_DEVICE_NAME"] = info.name
         print(
-            f"CONNECTED {info.name}. Backend client is active; "
+            f"CONNECTED {info.name} @ {host}. Backend client is active; "
             f"session={session_key_for_device(info.name)!r}; press button and speak.",
             flush=True,
         )
+        DEVICE_STATUS[host] = {
+            "online": True,
+            "connected": True,
+            "status": "connected",
+            "name": info.name,
+            "mac": getattr(info, "mac_address", ""),
+            "last_seen_at": time.time(),
+        }
         STATS["device_name"] = info.name
         STATS["connected"] = True
-        unsubscribe = CLIENT.subscribe_voice_assistant(
-            handle_start=on_start,
-            handle_stop=on_stop,
-            handle_audio=on_audio,
+        unsubscribe = client.subscribe_voice_assistant(
+            handle_start=wrap_start,
+            handle_stop=wrap_stop,
+            handle_audio=wrap_audio,
         )
 
         max_capture_seconds = CFG.max_capture_seconds
+        last_probe = 0.0
         while True:
             await asyncio.sleep(0.2)
             if STARTED_AT and not STOPPING and time.time() - STARTED_AT > max_capture_seconds:
+                mark_current_device()
                 await finish("timeout")
+            if time.time() - last_probe > 5:
+                # Force stale TCP/ESPHome connections to notice unplugged/offline devices.
+                await client.device_info()
+                DEVICE_STATUS.setdefault(host, {})["last_seen_at"] = time.time()
+                last_probe = time.time()
     finally:
         if unsubscribe:
             unsubscribe()
-        if CLIENT is not None:
-            try:
-                await CLIENT.disconnect()
-            except Exception as exc:  # noqa: BLE001 - reconnect loop handles recovery
-                print(f"WARN disconnect failed {exc!r}", flush=True)
-        CLIENT = None
+        try:
+            await client.disconnect()
+        except Exception as exc:  # noqa: BLE001 - reconnect loop handles recovery
+            print(f"WARN disconnect failed {host} {exc!r}", flush=True)
+        if CLIENT is client:
+            CLIENT = None
         STARTED_AT = None
         STOPPING = False
-        STATS["connected"] = False
+        DEVICE_STATUS.setdefault(host, {}).update({"online": False, "connected": False, "status": "offline"})
+        if STATS.get("device_name") == DEVICE_STATUS.get(host, {}).get("name"):
+            STATS["connected"] = any(bool(v.get("connected")) for v in DEVICE_STATUS.values())
 
 
-async def connection_loop(host: str, psk: str) -> None:
-    """Reconnect forever so the Voice PE keeps a backend client instead of going red."""
+async def connection_loop(device: dict[str, str]) -> None:
+    """Reconnect forever so Voice PE devices keep a backend client instead of going red."""
     reconnect_delay = CFG.reconnect_initial_seconds
     reconnect_max = CFG.reconnect_max_seconds
+    host = device["host"]
 
     while True:
         try:
-            await run_connected(host, psk)
+            await run_connected(device)
             reconnect_delay = CFG.reconnect_initial_seconds
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - deliberate service-style retry loop
-            print(f"DISCONNECTED {type(exc).__name__}: {exc}; retrying in {reconnect_delay:.1f}s", flush=True)
+            DEVICE_STATUS.setdefault(host, {}).update({"online": False, "connected": False, "status": "offline", "error": str(exc)})
+            print(f"DISCONNECTED {host} {type(exc).__name__}: {exc}; retrying in {reconnect_delay:.1f}s", flush=True)
             await asyncio.sleep(reconnect_delay)
             reconnect_delay = min(reconnect_delay * 2, reconnect_max)
+
+
+def _enabled_connection_devices() -> list[dict[str, str]]:
+    devices = [d for d in _load_voice_devices(reveal=True) if d.get("enabled", True) and d.get("psk")]
+    if not devices and CFG.voice_host and CFG.voice_psk:
+        devices = [{"name": CFG.voice_host, "host": CFG.voice_host, "psk": CFG.voice_psk, "password": CFG.voice_password, "enabled": True}]
+    return devices
 
 
 async def main() -> None:
@@ -530,14 +619,19 @@ async def main() -> None:
             print(f"  - {err}", file=sys.stderr)
         raise SystemExit(1)
 
-    host = CFG.voice_host
-    psk = CFG.voice_psk
-    LOCAL_IP = local_ip_for(host)
+    devices = _enabled_connection_devices()
+    if not devices:
+        raise SystemExit("No enabled Voice PE devices configured")
+    LOCAL_IP = local_ip_for(devices[0]["host"])
 
     runner = await start_http_server()
+    tasks = [asyncio.create_task(connection_loop(device)) for device in devices]
     try:
-        await connection_loop(host, psk)
+        await asyncio.gather(*tasks)
     finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         await runner.cleanup()
 
 
@@ -689,6 +783,17 @@ async def config_ui(request: web.Request) -> web.Response:
   .status-dot {{ display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }}
   .status-dot.on {{ background: var(--green); box-shadow: 0 0 6px var(--green); }}
   .status-dot.off {{ background: var(--red); box-shadow: 0 0 6px var(--red); }}
+  .device-list {{ display: grid; gap: 10px; }}
+  .device-row {{ border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: #0d1117; display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; }}
+  .device-title {{ font-weight: 800; color: var(--text); }}
+  .device-meta {{ color: var(--muted); font-size: .82rem; margin-top: 3px; }}
+  .device-actions {{ display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }}
+  .status-pill {{ display: inline-block; border-radius: 999px; padding: 2px 8px; font-size: .72rem; font-weight: 800; margin-left: 8px; }}
+  .status-pill.on {{ background: var(--green-bg); color: var(--green); }}
+  .status-pill.off {{ background: var(--red-bg); color: var(--red); }}
+  .dialog-backdrop {{ position: fixed; inset: 0; background: #0008; display: none; align-items: center; justify-content: center; padding: 16px; z-index: 10; }}
+  .dialog-backdrop.open {{ display: flex; }}
+  .dialog {{ width: min(560px, 100%); background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }}
   @media (max-width: 860px) {{ .grid, .fields {{ grid-template-columns: 1fr; }} header {{ display: block; }} }}
 </style>
 </head>
@@ -729,31 +834,44 @@ async def config_ui(request: web.Request) -> web.Response:
     </div>
   </div>
 
+  <div id="device-dialog" class="dialog-backdrop">
+    <div class="dialog">
+      <h2 id="device-dialog-title">Add Voice PE Device</h2>
+      <div class="fields">
+        <div class="field"><label>Device Name</label><input id="voice-device-name" placeholder="home-assistant-voice-…"></div>
+        <div class="field"><label>Host / IP</label><input id="voice-device-host" placeholder="192.168.50.xxx"></div>
+        <div class="field"><label>Noise PSK</label><input id="voice-device-psk" type="password" placeholder="leave blank to keep existing"></div>
+        <div class="field"><label>Password</label><input id="voice-device-password" type="password" placeholder="optional / leave blank"></div>
+      </div>
+      <div class="actions">
+        <button class="secondary" type="button" id="voice-device-cancel">Cancel</button>
+        <button type="button" id="voice-device-save">Save</button>
+      </div>
+    </div>
+  </div>
+
   <div id="msg" class="msg"></div>
 
   <form id="config-form">
     <div class="grid">
       <section class="card">
         <h2>Voice PE Devices</h2>
-        <div class="fields">
-          <div class="field full"><label>Known Devices</label><select id="voice-device-select"><option value="">Manual / new device…</option></select><div class="hint">Auswählen lädt Name/Host; PSK bleibt serverseitig verborgen.</div></div>
-          <div class="field"><label>Device Name</label><input id="voice-device-name" placeholder="home-assistant-voice-…"></div>
-          <div class="field"><label>Host / IP</label><input id="voice-device-host" placeholder="192.168.50.xxx"></div>
-          <div class="field"><label>Noise PSK</label><input id="voice-device-psk" type="password" placeholder="leave blank to keep existing"><div class="hint">Secret wird gespeichert, aber nie angezeigt.</div></div>
-          <div class="field"><label>Password</label><input id="voice-device-password" type="password" placeholder="optional / leave blank"></div>
-        </div>
+        <div id="voice-device-list" class="device-list"></div>
         <div class="actions">
-          <button class="secondary" type="button" id="voice-device-save">Save device</button>
-          <button type="button" id="voice-device-activate">Save & activate</button>
+          <button class="secondary" type="button" id="relay-restart">Restart relay</button>
+          <button type="button" id="voice-device-add">Add new device</button>
         </div>
-        <div class="hint">Aktivieren aktualisiert <code>VOICE_HOST</code>/<code>VOICE_PSK</code>; Verbindung wechselt nach Relay-Neustart.</div>
-        <div class="section-divider">Active low-level config</div>
+      </section>
+
+      <section class="card">
+        <h2>Active Low Level Config</h2>
         <div class="fields">
           <div class="field"><label>VOICE_HOST <span class="current" data-current="VOICE_HOST"></span></label><input name="VOICE_HOST" required></div>
           <div class="field"><label>VOICE_PSK <span class="current" data-current="VOICE_PSK"></span></label><input name="VOICE_PSK" type="password" placeholder="leave blank to keep existing"><div class="hint">Default: leer · Secret bleibt serverseitig gespeichert.</div></div>
           <div class="field"><label>VOICE_PASSWORD <span class="current" data-current="VOICE_PASSWORD"></span></label><input name="VOICE_PASSWORD" type="password" placeholder="leave blank to keep existing"><div class="hint">Default: leer</div></div>
         </div>
       </section>
+
 
       <section class="card">
         <h2>Local Services</h2>
@@ -867,45 +985,72 @@ async function reloadConfig() {{
   msg('✓ Reloaded from file'); await loadConfig();
 }}
 let voiceDevices = [];
-function fillDeviceMenu(activeHost='') {{
-  const sel = document.getElementById('voice-device-select');
-  sel.innerHTML = '<option value="">Manual / new device…</option>';
-  for (const d of voiceDevices) {{
-    const opt = document.createElement('option');
-    opt.value = d.host; opt.textContent = `${{d.name || d.host}} (${{d.host}})`;
-    if (d.host === activeHost) opt.selected = true;
-    sel.appendChild(opt);
-  }}
+let editingDeviceHost = '';
+function deviceStatusLabel(d) {{
+  if (!d.enabled) return ['Disabled', 'off'];
+  if (d.connected || d.online) return ['Online', 'on'];
+  return ['Offline', 'off'];
 }}
-function fillDeviceFields(host) {{
+function renderDevices() {{
+  const list = document.getElementById('voice-device-list');
+  if (!voiceDevices.length) {{ list.innerHTML = '<div class="hint">No devices yet. Add one with the button.</div>'; return; }}
+  list.innerHTML = '';
+  for (const d of voiceDevices) {{
+    const [label, cls] = deviceStatusLabel(d);
+    const row = document.createElement('div'); row.className = 'device-row';
+    row.innerHTML = `<div><div class="device-title">${{d.name || d.host}}<span class="status-pill ${{cls}}">${{label}}</span>${{d.active ? '<span class="status-pill on">Active</span>' : ''}}</div><div class="device-meta">${{d.host}} · PSK ${{d.psk ? 'configured' : 'missing'}} · Password ${{d.password ? 'configured' : 'empty'}}</div></div><div class="device-actions"><button class="secondary" data-action="edit" data-host="${{d.host}}">Edit</button><button class="secondary" data-action="toggle" data-host="${{d.host}}">${{d.enabled ? 'Disable' : 'Enable'}}</button><button class="secondary" data-action="delete" data-host="${{d.host}}">Delete</button><button data-action="activate" data-host="${{d.host}}">Activate</button></div>`;
+    list.appendChild(row);
+  }}
+  list.querySelectorAll('button').forEach(btn => btn.addEventListener('click', () => handleDeviceAction(btn.dataset.action, btn.dataset.host)));
+}}
+function openDeviceDialog(host='') {{
+  editingDeviceHost = host;
   const d = voiceDevices.find(x => x.host === host);
+  document.getElementById('device-dialog-title').textContent = d ? 'Edit Voice PE Device' : 'Add Voice PE Device';
   document.getElementById('voice-device-name').value = d?.name || '';
   document.getElementById('voice-device-host').value = d?.host || '';
+  document.getElementById('voice-device-host').disabled = !!d;
   document.getElementById('voice-device-psk').value = '';
   document.getElementById('voice-device-password').value = '';
+  document.getElementById('device-dialog').classList.add('open');
 }}
+function closeDeviceDialog() {{ document.getElementById('device-dialog').classList.remove('open'); }}
 async function loadDevices() {{
   const r = await fetch('/api/devices');
   const data = await r.json().catch(() => ({{devices: []}}));
   if (!r.ok) return;
   voiceDevices = data.devices || [];
-  fillDeviceMenu(data.active_host || '');
-  fillDeviceFields(document.getElementById('voice-device-select').value);
+  renderDevices();
 }}
-async function saveVoiceDevice(activate=false) {{
-  const payload = {{
-    name: document.getElementById('voice-device-name').value,
-    host: document.getElementById('voice-device-host').value,
-    psk: document.getElementById('voice-device-psk').value,
-    password: document.getElementById('voice-device-password').value,
-    activate,
-  }};
+async function putDevice(payload) {{
   const r = await fetch('/api/devices', {{ method: 'PUT', headers: headers({{'Content-Type':'application/json'}}), body: JSON.stringify(payload) }});
   const result = await r.json().catch(() => ({{error: 'Invalid response'}}));
-  if (!r.ok) {{ msg('✗ ' + (result.error || 'Device save failed'), 'err'); return; }}
-  voiceDevices = result.devices || []; fillDeviceMenu(result.active_host || payload.host); fillDeviceFields(payload.host);
-  await loadConfig();
-  msg('✓ Device saved' + (result.restart_required ? '. Restart relay to switch connection.' : '.'));
+  if (!r.ok) {{ msg('✗ ' + (result.error || 'Device action failed'), 'err'); return null; }}
+  voiceDevices = result.devices || []; renderDevices(); await loadConfig();
+  return result;
+}}
+async function saveVoiceDevice() {{
+  const host = editingDeviceHost || document.getElementById('voice-device-host').value;
+  const result = await putDevice({{
+    name: document.getElementById('voice-device-name').value,
+    host,
+    psk: document.getElementById('voice-device-psk').value,
+    password: document.getElementById('voice-device-password').value,
+  }});
+  if (result) {{ closeDeviceDialog(); msg('✓ Device saved'); }}
+}}
+async function handleDeviceAction(action, host) {{
+  const d = voiceDevices.find(x => x.host === host);
+  if (action === 'edit') return openDeviceDialog(host);
+  if (action === 'toggle') {{ const result = await putDevice({{host, enabled: !d.enabled}}); if (result) msg('✓ Device updated. Restart relay to apply connection changes.'); return; }}
+  if (action === 'activate') {{ const result = await putDevice({{host, activate: true}}); if (result) msg('✓ Device activated. Restart relay to switch connection.'); return; }}
+  if (action === 'delete') {{ if (!confirm(`Delete ${{d?.name || host}}?`)) return; const result = await putDevice({{host, action: 'delete'}}); if (result) msg('✓ Device deleted. Restart relay to apply.'); }}
+}}
+async function restartRelay() {{
+  const r = await fetch('/api/restart', {{ method: 'POST', headers: headers() }});
+  const result = await r.json().catch(() => ({{error: 'Invalid response'}}));
+  if (!r.ok) {{ msg('✗ ' + (result.error || 'Restart failed'), 'err'); return; }}
+  msg('✓ Relay restart scheduled. Reconnect in a few seconds.');
 }}
 function formatDateTime(ts) {{
   return new Date(ts * 1000).toLocaleString([], {{ dateStyle: 'short', timeStyle: 'medium' }});
@@ -955,9 +1100,10 @@ updateDeviceOverview();
 
 document.getElementById('reload-btn').addEventListener('click', reloadConfig);
 document.getElementById('config-form').addEventListener('submit', saveConfig);
-document.getElementById('voice-device-select').addEventListener('change', e => fillDeviceFields(e.target.value));
-document.getElementById('voice-device-save').addEventListener('click', () => saveVoiceDevice(false));
-document.getElementById('voice-device-activate').addEventListener('click', () => saveVoiceDevice(true));
+document.getElementById('voice-device-add').addEventListener('click', () => openDeviceDialog());
+document.getElementById('voice-device-cancel').addEventListener('click', closeDeviceDialog);
+document.getElementById('voice-device-save').addEventListener('click', saveVoiceDevice);
+document.getElementById('relay-restart').addEventListener('click', restartRelay);
 applyDefaultHints();
 loadConfig();
 loadDevices();
