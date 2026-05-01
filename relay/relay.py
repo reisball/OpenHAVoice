@@ -588,9 +588,6 @@ async def config_ui(request: web.Request) -> web.Response:
     </div>
   </div>
 
-  <div class="authbar">
-    <button class="secondary" type="button" id="load-btn">Load current values</button>
-  </div>
   <div id="msg" class="msg"></div>
 
   <form id="config-form">
@@ -697,7 +694,7 @@ async function loadConfig() {{
   const r = await fetch('/config', {{ headers: headers() }});
   const data = await r.json().catch(() => ({{error: 'Invalid response'}}));
   if (!r.ok) {{ msg('✗ ' + (data.details || data.error || 'Config load failed'), 'err'); return; }}
-  fillForm(data); msg('✓ Current values loaded');
+  fillForm(data);
 }}
 async function saveConfig(e) {{
   e.preventDefault();
