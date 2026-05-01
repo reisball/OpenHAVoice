@@ -59,6 +59,41 @@ STATS: dict[str, object] = {
     "connected": False,
     "service_started_at": SERVICE_STARTED_AT,
 }
+DEVICE_STATS: dict[str, dict[str, object]] = {}
+CURRENT_DEVICE_HOST: str | None = None
+
+
+def _new_device_stats(name: str | None = None) -> dict[str, object]:
+    return {
+        "total_sessions": 0,
+        "last_session_at": None,
+        "last_stop_reason": None,
+        "last_session_duration_sec": None,
+        "last_in_at": None,
+        "last_in_duration_sec": None,
+        "last_out_at": None,
+        "last_out_duration_sec": None,
+        "last_turn_duration_sec": None,
+        "device_name": name,
+        "connected": False,
+    }
+
+
+def _device_stats(host: str | None = None) -> dict[str, object] | None:
+    host = host or CURRENT_DEVICE_HOST
+    if not host:
+        return None
+    name = str(DEVICE_STATUS.get(host, {}).get("name") or host)
+    stats = DEVICE_STATS.setdefault(host, _new_device_stats(name))
+    stats.setdefault("device_name", name)
+    return stats
+
+
+def _set_stat(key: str, value: object, host: str | None = None) -> None:
+    STATS[key] = value
+    stats = _device_stats(host)
+    if stats is not None:
+        stats[key] = value
 
 VAD = webrtcvad.Vad(2)
 FRAME_MS = 30
@@ -181,6 +216,15 @@ async def status_handler(_request: web.Request) -> web.Response:
     data = dict(STATS)
     data["service_started_at"] = SERVICE_STARTED_AT
     data["service_uptime_sec"] = round(time.time() - SERVICE_STARTED_AT, 1)
+    devices = _load_voice_devices(reveal=False)
+    for device in devices:
+        host = device["host"]
+        device.update(DEVICE_STATUS.get(host, {}))
+        stats = dict(DEVICE_STATS.get(host, _new_device_stats(str(device.get("name") or host))))
+        stats["device_name"] = str(device.get("name") or stats.get("device_name") or host)
+        stats["connected"] = bool(device.get("connected"))
+        device.update(stats)
+    data["devices"] = devices
     return web.json_response(data)
 
 
@@ -358,10 +402,11 @@ async def speak(text: str) -> None:
     print(f"TTS_READY {url} bytes={len(audio)} text={text!r}", flush=True)
     CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_TTS_START, {"text": text})
     CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_TTS_END, {"url": url})
-    STATS["last_tts_timestamp"] = time.time()
-    STATS["last_out_at"] = STATS["last_tts_timestamp"]
+    last_tts_timestamp = time.time()
+    _set_stat("last_tts_timestamp", last_tts_timestamp)
+    _set_stat("last_out_at", last_tts_timestamp)
     out_duration = wav_duration_seconds(audio)
-    STATS["last_out_duration_sec"] = round(out_duration, 1) if out_duration is not None else None
+    _set_stat("last_out_duration_sec", round(out_duration, 1) if out_duration is not None else None)
 
 
 async def finish(reason: str, abort: bool = False) -> None:
@@ -383,9 +428,9 @@ async def finish(reason: str, abort: bool = False) -> None:
         duration = time.time() - STARTED_AT
     input_duration = size / 32000 if size else None
     if reason:
-        STATS["last_stop_reason"] = reason
-        STATS["last_session_at"] = time.time()
-        STATS["last_session_duration_sec"] = round(duration, 1) if duration is not None else None
+        _set_stat("last_stop_reason", reason)
+        _set_stat("last_session_at", time.time())
+        _set_stat("last_session_duration_sec", round(duration, 1) if duration is not None else None)
 
     try:
         CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_STT_VAD_END, None)
@@ -394,7 +439,7 @@ async def finish(reason: str, abort: bool = False) -> None:
 
     if abort or size < 3200 or SPEECH_MS < CFG.min_speech_ms:
         if STARTED_AT is not None:
-            STATS["last_turn_duration_sec"] = round(time.time() - STARTED_AT, 1)
+            _set_stat("last_turn_duration_sec", round(time.time() - STARTED_AT, 1))
         try:
             CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_RUN_END, None)
         except Exception:
@@ -408,16 +453,16 @@ async def finish(reason: str, abort: bool = False) -> None:
     loop = asyncio.get_running_loop()
     try:
         text = await loop.run_in_executor(None, transcribe, wav_path)
-        STATS["last_in_at"] = time.time()
-        STATS["last_in_duration_sec"] = round(input_duration, 1) if input_duration is not None else None
+        _set_stat("last_in_at", time.time())
+        _set_stat("last_in_duration_sec", round(input_duration, 1) if input_duration is not None else None)
         print(f"TRANSCRIPT {text!r}", flush=True)
         CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_STT_END, {"text": text})
         CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_INTENT_START, None)
         CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_INTENT_END, None)
-        STATS["last_stt_text"] = text
+        _set_stat("last_stt_text", text)
 
         response_text = await loop.run_in_executor(None, openclaw_chat, text)
-        STATS["last_llm_text"] = response_text
+        _set_stat("last_llm_text", response_text)
         print(f"OPENCLAW_REPLY {response_text!r}", flush=True)
         await speak(response_text)
         post_tts_grace_seconds = CFG.tts_post_playback_grace_seconds
@@ -427,7 +472,7 @@ async def finish(reason: str, abort: bool = False) -> None:
         print(f"ROUNDTRIP_FAILED {exc!r}", flush=True)
     finally:
         if STARTED_AT is not None:
-            STATS["last_turn_duration_sec"] = round(time.time() - STARTED_AT, 1)
+            _set_stat("last_turn_duration_sec", round(time.time() - STARTED_AT, 1))
         try:
             CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_RUN_END, None)
         except Exception:
@@ -445,6 +490,10 @@ async def on_start(conversation_id, flags, audio_settings, wake_word_phrase):
     SPEECH_MS = 0
     LOW_RMS_MS = 0
     STATS["total_sessions"] = STATS.get("total_sessions", 0) + 1
+    stats = _device_stats()
+    if stats is not None:
+        stats["total_sessions"] = int(stats.get("total_sessions") or 0) + 1
+        stats["current_session_started_at"] = STARTED_AT
     STATS["current_session_started_at"] = STARTED_AT
     print(
         f"START wake={wake_word_phrase!r} flags={flags} settings={audio_settings} conv={conversation_id!r}",
@@ -508,7 +557,7 @@ async def on_stop(abort: bool) -> None:
 
 async def run_connected(device: dict[str, str]) -> None:
     """Hold one long-lived ESPHome API connection until it fails or is cancelled."""
-    global CLIENT, STARTED_AT, STOPPING
+    global CLIENT, STARTED_AT, STOPPING, CURRENT_DEVICE_HOST
     host = device["host"]
     psk = device["psk"]
     password = device.get("password", "")
@@ -519,8 +568,9 @@ async def run_connected(device: dict[str, str]) -> None:
     unsubscribe = None
 
     def mark_current_device() -> None:
-        global CLIENT
+        global CLIENT, CURRENT_DEVICE_HOST
         CLIENT = client
+        CURRENT_DEVICE_HOST = host
         os.environ["OPENHAVOICE_DEVICE_NAME"] = str(DEVICE_STATUS.get(host, {}).get("name") or name_hint)
 
     async def wrap_start(conversation_id, flags, audio_settings, wake_word_phrase):
@@ -552,8 +602,9 @@ async def run_connected(device: dict[str, str]) -> None:
             "mac": getattr(info, "mac_address", ""),
             "last_seen_at": time.time(),
         }
-        STATS["device_name"] = info.name
-        STATS["connected"] = True
+        DEVICE_STATS.setdefault(host, _new_device_stats(info.name))["device_name"] = info.name
+        _set_stat("device_name", info.name, host)
+        _set_stat("connected", True, host)
         unsubscribe = client.subscribe_voice_assistant(
             handle_start=wrap_start,
             handle_stop=wrap_stop,
@@ -584,6 +635,9 @@ async def run_connected(device: dict[str, str]) -> None:
         STARTED_AT = None
         STOPPING = False
         DEVICE_STATUS.setdefault(host, {}).update({"online": False, "connected": False, "status": "offline"})
+        stats = _device_stats(host)
+        if stats is not None:
+            stats["connected"] = False
         if STATS.get("device_name") == DEVICE_STATUS.get(host, {}).get("name"):
             STATS["connected"] = any(bool(v.get("connected")) for v in DEVICE_STATUS.values())
 
@@ -794,6 +848,11 @@ async def config_ui(request: web.Request) -> web.Response:
   .status-dot.on {{ background: var(--green); box-shadow: 0 0 6px var(--green); }}
   .status-dot.off {{ background: var(--red); box-shadow: 0 0 6px var(--red); }}
   .device-list {{ display: grid; gap: 10px; }}
+  .device-status-list {{ display: grid; gap: 16px; }}
+  .device-status-section {{ border-top: 1px solid var(--line); padding-top: 14px; }}
+  .device-status-section:first-child {{ border-top: 0; padding-top: 0; }}
+  .device-status-fields {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }}
+  .device-status-fields .current {{ max-width: 100%; font-size: 1rem; }}
   .device-row {{ border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: #0d1117; display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; }}
   .device-title {{ font-weight: 800; color: var(--text); }}
   .device-meta {{ color: var(--muted); font-size: .82rem; margin-top: 3px; }}
@@ -829,20 +888,7 @@ async def config_ui(request: web.Request) -> web.Response:
   <!-- Device Overview Dashboard -->
   <div class="card wide" id="device-card">
     <h2>Device Status</h2>
-    <div class="fields" style="grid-template-columns: repeat(3, 1fr);" id="device-overview">
-      <div class="field"><label>Device</label><span id="dv-device" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
-      <div class="field"><label>Status</label><span id="dv-status" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
-      <div class="field"><label>Sessions</label><span id="dv-sessions" class="current" style="max-width:100%;font-size:1rem;">0</span></div>
-      <div class="field"><label>Last In</label><span id="dv-in-at" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
-      <div class="field"><label>Duration</label><span id="dv-in-duration" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
-      <div class="field spacer" aria-hidden="true"></div>
-      <div class="field"><label>Last Out</label><span id="dv-out-at" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
-      <div class="field"><label>Duration</label><span id="dv-out-duration" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
-      <div class="field spacer" aria-hidden="true"></div>
-      <div class="field"><label>Turn Duration</label><span id="dv-turn-duration" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
-      <div class="field"><label>Last Stop</label><span id="dv-stop" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
-      <div class="field spacer" aria-hidden="true"></div>
-    </div>
+    <div id="device-overview" class="device-status-list"></div>
   </div>
 
   <div id="msg" class="msg"></div>
@@ -1076,34 +1122,51 @@ function formatDuration(seconds) {{
   if (m > 0) return `${{m}}m ${{sec}}s`;
   return `${{sec}}s`;
 }}
+function deviceField(label, value, color='') {{
+  const style = color ? ` style="color:${{color}}"` : '';
+  return `<div class="field"><label>${{label}}</label><span class="current"${{style}}>${{value}}</span></div>`;
+}}
+function formatTime(ts) {{
+  return ts ? new Date(ts * 1000).toLocaleTimeString() : '—';
+}}
+function formatSeconds(value) {{
+  return value != null ? Number(value).toFixed(1) + 's' : '—';
+}}
+function renderDeviceStatus(devices) {{
+  const root = document.getElementById('device-overview');
+  if (!devices || !devices.length) {{
+    root.innerHTML = '<div class="hint">No devices configured.</div>';
+    return;
+  }}
+  root.innerHTML = devices.map((d) => {{
+    const connected = !!d.connected;
+    const status = connected ? 'Connected' : 'Disconnected';
+    const color = connected ? 'var(--green)' : 'var(--red)';
+    return `<div class="device-status-section"><div class="device-status-fields">
+      ${{deviceField('Device', d.device_name || d.name || d.host || '—')}}
+      ${{deviceField('Status', status, color)}}
+      ${{deviceField('Sessions', d.total_sessions || 0)}}
+      ${{deviceField('Last In', formatTime(d.last_in_at))}}
+      ${{deviceField('Duration', formatSeconds(d.last_in_duration_sec))}}
+      <div class="field spacer" aria-hidden="true"></div>
+      ${{deviceField('Last Out', formatTime(d.last_out_at))}}
+      ${{deviceField('Duration', formatSeconds(d.last_out_duration_sec))}}
+      <div class="field spacer" aria-hidden="true"></div>
+      ${{deviceField('Turn Duration', formatSeconds(d.last_turn_duration_sec))}}
+      ${{deviceField('Last Stop', d.last_stop_reason || '—')}}
+      <div class="field spacer" aria-hidden="true"></div>
+    </div></div>`;
+  }}).join('');
+}}
 async function updateDeviceOverview() {{
   try {{
     const r = await fetch('/api/status');
     const s = await r.json();
-    document.getElementById('dv-device').textContent = s.device_name || '—';
-    document.getElementById('dv-status').textContent = s.connected ? 'Connected' : 'Disconnected';
-    document.getElementById('dv-status').style.color = s.connected ? 'var(--green)' : 'var(--red)';
-    document.getElementById('dv-sessions').textContent = s.total_sessions || 0;
     document.getElementById('svc-start').textContent = s.service_started_at
       ? formatDateTime(s.service_started_at)
       : '—';
     document.getElementById('svc-uptime').textContent = formatDuration(s.service_uptime_sec);
-    document.getElementById('dv-in-at').textContent = s.last_in_at
-      ? new Date(s.last_in_at * 1000).toLocaleTimeString()
-      : '—';
-    document.getElementById('dv-in-duration').textContent = s.last_in_duration_sec != null
-      ? s.last_in_duration_sec.toFixed(1) + 's'
-      : '—';
-    document.getElementById('dv-out-at').textContent = s.last_out_at
-      ? new Date(s.last_out_at * 1000).toLocaleTimeString()
-      : '—';
-    document.getElementById('dv-out-duration').textContent = s.last_out_duration_sec != null
-      ? s.last_out_duration_sec.toFixed(1) + 's'
-      : '—';
-    document.getElementById('dv-turn-duration').textContent = s.last_turn_duration_sec != null
-      ? s.last_turn_duration_sec.toFixed(1) + 's'
-      : '—';
-    document.getElementById('dv-stop').textContent = s.last_stop_reason || '—';
+    renderDeviceStatus(s.devices || []);
   }} catch {{ /* ignore */ }}
 }}
 setInterval(updateDeviceOverview, 3000);
