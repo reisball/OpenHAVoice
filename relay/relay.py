@@ -242,15 +242,18 @@ async def devices_put(request: web.Request) -> web.Response:
 
     action = str(body.get("action", "save")).strip().lower()
     host = str(body.get("host", "")).strip()
+    original_host = str(body.get("original_host", "")).strip() or host
     if not host:
         return web.json_response({"error": "host is required"}, status=400)
 
     devices = _load_voice_devices(reveal=True)
-    existing = next((d for d in devices if d.get("host") == host), None)
+    existing = next((d for d in devices if d.get("host") == original_host), None)
+    if original_host != host and any(d.get("host") == host for d in devices if d is not existing):
+        return web.json_response({"error": "another device already uses this host"}, status=400)
 
     if action == "delete":
-        devices = [d for d in devices if d.get("host") != host]
-        if CFG.voice_host == host:
+        devices = [d for d in devices if d.get("host") != original_host]
+        if CFG.voice_host == original_host:
             replacement = next((d for d in devices if d.get("enabled", True) and d.get("psk")), None)
             CFG.voice_host = replacement.get("host", "") if replacement else ""
             CFG.voice_psk = replacement.get("psk", "") if replacement else ""
@@ -269,6 +272,10 @@ async def devices_put(request: web.Request) -> web.Response:
     psk = str(body.get("psk", "")).strip()
     password = str(body.get("password", "")).strip()
     activate = bool(body.get("activate", False))
+    if host != existing.get("host"):
+        if CFG.voice_host == existing.get("host"):
+            CFG.voice_host = host
+        existing["host"] = host
     if name:
         existing["name"] = name
     if psk and psk != "****":
@@ -812,6 +819,7 @@ async def config_ui(request: web.Request) -> web.Response:
     <div class="fields" style="grid-template-columns: repeat(3, 1fr);" id="service-overview">
       <div class="field"><label>Service Start</label><span id="svc-start" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
       <div class="field"><label>Uptime</label><span id="svc-uptime" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
+      <div class="field" style="align-items:flex-end; justify-content:flex-end;"><button class="secondary" type="button" id="relay-restart">Restart relay</button></div>
     </div>
   </div>
 
@@ -834,32 +842,25 @@ async def config_ui(request: web.Request) -> web.Response:
     </div>
   </div>
 
-  <div id="device-dialog" class="dialog-backdrop">
-    <div class="dialog">
-      <h2 id="device-dialog-title">Add Voice PE Device</h2>
-      <div class="fields">
-        <div class="field"><label>Device Name</label><input id="voice-device-name" placeholder="home-assistant-voice-…"></div>
-        <div class="field"><label>Host / IP</label><input id="voice-device-host" placeholder="192.168.50.xxx"></div>
-        <div class="field"><label>Noise PSK</label><input id="voice-device-psk" type="password" placeholder="leave blank to keep existing"></div>
-        <div class="field"><label>Password</label><input id="voice-device-password" type="password" placeholder="optional / leave blank"></div>
-      </div>
-      <div class="actions">
-        <button class="secondary" type="button" id="voice-device-cancel">Cancel</button>
-        <button type="button" id="voice-device-save">Save</button>
-      </div>
-    </div>
-  </div>
-
   <div id="msg" class="msg"></div>
 
   <form id="config-form">
     <div class="grid">
       <section class="card">
         <h2>Voice PE Devices</h2>
-        <div id="voice-device-list" class="device-list"></div>
+        <div class="fields">
+          <div class="field full"><label>Device</label><select id="voice-device-select"></select></div>
+          <div class="field"><label>Device Name</label><input id="voice-device-name" placeholder="home-assistant-voice-…"></div>
+          <div class="field"><label>Host / IP</label><input id="voice-device-host" placeholder="192.168.50.xxx"></div>
+          <div class="field"><label>Noise PSK</label><input id="voice-device-psk" type="password" placeholder="leave blank to keep existing"></div>
+          <div class="field"><label>Password</label><input id="voice-device-password" type="password" placeholder="optional / leave blank"></div>
+          <div class="field"><label>Status</label><span id="voice-device-status" class="current">—</span></div>
+          <div class="field"><label><input id="voice-device-enabled" type="checkbox"> Enabled</label><div class="hint">Connection changes need relay restart.</div></div>
+          <div class="field"><label><input id="voice-device-active" type="checkbox"> Active device</label><div class="hint">Save marks this device as active.</div></div>
+        </div>
         <div class="actions">
-          <button class="secondary" type="button" id="relay-restart">Restart relay</button>
-          <button type="button" id="voice-device-add">Add new device</button>
+          <button class="secondary" type="button" id="voice-device-add">Add new device</button>
+          <button type="button" id="voice-device-save">Save device</button>
         </div>
       </section>
 
@@ -985,36 +986,50 @@ async function reloadConfig() {{
   msg('✓ Reloaded from file'); await loadConfig();
 }}
 let voiceDevices = [];
-let editingDeviceHost = '';
+let selectedDeviceHost = '';
 function deviceStatusLabel(d) {{
+  if (!d) return ['—', ''];
   if (!d.enabled) return ['Disabled', 'off'];
   if (d.connected || d.online) return ['Online', 'on'];
   return ['Offline', 'off'];
 }}
 function renderDevices() {{
-  const list = document.getElementById('voice-device-list');
-  if (!voiceDevices.length) {{ list.innerHTML = '<div class="hint">No devices yet. Add one with the button.</div>'; return; }}
-  list.innerHTML = '';
-  for (const d of voiceDevices) {{
-    const [label, cls] = deviceStatusLabel(d);
-    const row = document.createElement('div'); row.className = 'device-row';
-    row.innerHTML = `<div><div class="device-title">${{d.name || d.host}}<span class="status-pill ${{cls}}">${{label}}</span>${{d.active ? '<span class="status-pill on">Active</span>' : ''}}</div><div class="device-meta">${{d.host}} · PSK ${{d.psk ? 'configured' : 'missing'}} · Password ${{d.password ? 'configured' : 'empty'}}</div></div><div class="device-actions"><button class="secondary" data-action="edit" data-host="${{d.host}}">Edit</button><button class="secondary" data-action="toggle" data-host="${{d.host}}">${{d.enabled ? 'Disable' : 'Enable'}}</button><button class="secondary" data-action="delete" data-host="${{d.host}}">Delete</button><button data-action="activate" data-host="${{d.host}}">Activate</button></div>`;
-    list.appendChild(row);
+  const select = document.getElementById('voice-device-select');
+  select.innerHTML = '';
+  if (!voiceDevices.length) {{
+    select.innerHTML = '<option value="">No devices configured</option>';
+    selectedDeviceHost = '';
+    fillSelectedDevice(null);
+    return;
   }}
-  list.querySelectorAll('button').forEach(btn => btn.addEventListener('click', () => handleDeviceAction(btn.dataset.action, btn.dataset.host)));
+  for (const d of voiceDevices) {{
+    const opt = document.createElement('option');
+    opt.value = d.host;
+    opt.textContent = `${{d.name || d.host}} (${{d.host}})${{d.active ? ' — active' : ''}}`;
+    select.appendChild(opt);
+  }}
+  if (!voiceDevices.some(d => d.host === selectedDeviceHost)) selectedDeviceHost = voiceDevices[0].host;
+  select.value = selectedDeviceHost;
+  fillSelectedDevice(voiceDevices.find(d => d.host === selectedDeviceHost));
 }}
-function openDeviceDialog(host='') {{
-  editingDeviceHost = host;
-  const d = voiceDevices.find(x => x.host === host);
-  document.getElementById('device-dialog-title').textContent = d ? 'Edit Voice PE Device' : 'Add Voice PE Device';
+function fillSelectedDevice(d) {{
   document.getElementById('voice-device-name').value = d?.name || '';
   document.getElementById('voice-device-host').value = d?.host || '';
-  document.getElementById('voice-device-host').disabled = !!d;
   document.getElementById('voice-device-psk').value = '';
   document.getElementById('voice-device-password').value = '';
-  document.getElementById('device-dialog').classList.add('open');
+  document.getElementById('voice-device-enabled').checked = d ? !!d.enabled : true;
+  document.getElementById('voice-device-active').checked = d ? !!d.active : false;
+  const [label, cls] = deviceStatusLabel(d);
+  const status = document.getElementById('voice-device-status');
+  status.textContent = d ? `${{label}}${{d.active ? ' · Active' : ''}} · PSK ${{d.psk ? 'configured' : 'missing'}} · Password ${{d.password ? 'configured' : 'empty'}}` : '—';
+  status.style.color = cls === 'on' ? 'var(--green)' : (cls === 'off' ? 'var(--red)' : '');
 }}
-function closeDeviceDialog() {{ document.getElementById('device-dialog').classList.remove('open'); }}
+function openDeviceDialog() {{
+  selectedDeviceHost = '';
+  document.getElementById('voice-device-select').value = '';
+  fillSelectedDevice(null);
+  document.getElementById('voice-device-name').focus();
+}}
 async function loadDevices() {{
   const r = await fetch('/api/devices');
   const data = await r.json().catch(() => ({{devices: []}}));
@@ -1026,25 +1041,24 @@ async function putDevice(payload) {{
   const r = await fetch('/api/devices', {{ method: 'PUT', headers: headers({{'Content-Type':'application/json'}}), body: JSON.stringify(payload) }});
   const result = await r.json().catch(() => ({{error: 'Invalid response'}}));
   if (!r.ok) {{ msg('✗ ' + (result.error || 'Device action failed'), 'err'); return null; }}
-  voiceDevices = result.devices || []; renderDevices(); await loadConfig();
+  voiceDevices = result.devices || [];
+  selectedDeviceHost = payload.host || selectedDeviceHost;
+  renderDevices();
+  await loadConfig();
   return result;
 }}
 async function saveVoiceDevice() {{
-  const host = editingDeviceHost || document.getElementById('voice-device-host').value;
+  const host = document.getElementById('voice-device-host').value.trim();
   const result = await putDevice({{
-    name: document.getElementById('voice-device-name').value,
+    original_host: selectedDeviceHost || host,
+    name: document.getElementById('voice-device-name').value.trim(),
     host,
     psk: document.getElementById('voice-device-psk').value,
     password: document.getElementById('voice-device-password').value,
+    enabled: document.getElementById('voice-device-enabled').checked,
+    activate: document.getElementById('voice-device-active').checked,
   }});
-  if (result) {{ closeDeviceDialog(); msg('✓ Device saved'); }}
-}}
-async function handleDeviceAction(action, host) {{
-  const d = voiceDevices.find(x => x.host === host);
-  if (action === 'edit') return openDeviceDialog(host);
-  if (action === 'toggle') {{ const result = await putDevice({{host, enabled: !d.enabled}}); if (result) msg('✓ Device updated. Restart relay to apply connection changes.'); return; }}
-  if (action === 'activate') {{ const result = await putDevice({{host, activate: true}}); if (result) msg('✓ Device activated. Restart relay to switch connection.'); return; }}
-  if (action === 'delete') {{ if (!confirm(`Delete ${{d?.name || host}}?`)) return; const result = await putDevice({{host, action: 'delete'}}); if (result) msg('✓ Device deleted. Restart relay to apply.'); }}
+  if (result) msg('✓ Device saved' + (result.restart_required ? '. Restart relay to apply connection changes.' : ''));
 }}
 async function restartRelay() {{
   const r = await fetch('/api/restart', {{ method: 'POST', headers: headers() }});
@@ -1100,8 +1114,8 @@ updateDeviceOverview();
 
 document.getElementById('reload-btn').addEventListener('click', reloadConfig);
 document.getElementById('config-form').addEventListener('submit', saveConfig);
+document.getElementById('voice-device-select').addEventListener('change', () => {{ selectedDeviceHost = document.getElementById('voice-device-select').value; renderDevices(); }});
 document.getElementById('voice-device-add').addEventListener('click', () => openDeviceDialog());
-document.getElementById('voice-device-cancel').addEventListener('click', closeDeviceDialog);
 document.getElementById('voice-device-save').addEventListener('click', saveVoiceDevice);
 document.getElementById('relay-restart').addEventListener('click', restartRelay);
 applyDefaultHints();
