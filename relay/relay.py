@@ -542,6 +542,7 @@ async def config_ui(request: web.Request) -> web.Response:
   .grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }}
   .card {{ background: linear-gradient(180deg, var(--panel), var(--panel2)); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }}
   .wide {{ grid-column: 1 / -1; }}
+  #device-card {{ margin-bottom: 14px; }}
   h2 {{ color: var(--orange); font-size: .85rem; text-transform: uppercase; letter-spacing: .08em; margin: 0 0 14px; }}
   .fields {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }}
   .field.full {{ grid-column: 1 / -1; }}
@@ -731,7 +732,6 @@ async function updateDeviceOverview() {{
 setInterval(updateDeviceOverview, 3000);
 updateDeviceOverview();
 
-document.getElementById('load-btn').addEventListener('click', loadConfig);
 document.getElementById('reload-btn').addEventListener('click', reloadConfig);
 document.getElementById('config-form').addEventListener('submit', saveConfig);
 applyDefaultHints();
