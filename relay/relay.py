@@ -552,6 +552,7 @@ async def config_ui(request: web.Request) -> web.Response:
   h2 {{ color: var(--orange); font-size: .85rem; text-transform: uppercase; letter-spacing: .08em; margin: 0 0 14px; }}
   .fields {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }}
   .field.full {{ grid-column: 1 / -1; }}
+  .section-divider {{ grid-column: 1 / -1; border-top: 1px solid var(--line); margin: 4px 0 2px; padding-top: 12px; color: var(--orange); font-size: .72rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }}
   label {{ display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: .76rem; font-weight: 700; letter-spacing: .04em; margin-bottom: 5px; }}
   .current {{ color: var(--blue); font-weight: 600; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; letter-spacing: 0; }}
   input, textarea {{ width: 100%; padding: 9px 10px; background: #0d1117; border: 1px solid var(--line); border-radius: 8px; color: var(--text); font: inherit; }}
@@ -614,7 +615,8 @@ async def config_ui(request: web.Request) -> web.Response:
         <h2>Local Services</h2>
         <div class="fields">
           <div class="field full"><label>WHISPER_URL <span class="current" data-current="WHISPER_URL"></span></label><input name="WHISPER_URL"></div>
-          <div class="field"><label>LANGUAGE <span class="current" data-current="LANGUAGE"></span></label><input name="LANGUAGE"></div>
+          <div class="field full"><label>LANGUAGE <span class="current" data-current="LANGUAGE"></span></label><input name="LANGUAGE"></div>
+          <div class="section-divider">Orpheus TTS</div>
           <div class="field"><label>ORPHEUS_VOICE <span class="current" data-current="ORPHEUS_VOICE"></span></label><input name="ORPHEUS_VOICE"></div>
           <div class="field full"><label>ORPHEUS_URL <span class="current" data-current="ORPHEUS_URL"></span></label><input name="ORPHEUS_URL"></div>
           <div class="field"><label>ORPHEUS_MODEL <span class="current" data-current="ORPHEUS_MODEL"></span></label><input name="ORPHEUS_MODEL"></div>
