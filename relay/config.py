@@ -204,13 +204,18 @@ def _env_to_field(env_key: str) -> str | None:
     return None
 
 
-def _coerce(raw: str, target_type: type) -> Any:
-    """Coerce a string value to the target type."""
-    if target_type is bool:
+def _coerce(raw: str, target_type: type | str) -> Any:
+    """Coerce a string value to the target type.
+
+    With ``from __future__ import annotations``, dataclass field types may be
+    stored as strings, so accept both actual type objects and their names.
+    """
+    type_name = target_type if isinstance(target_type, str) else getattr(target_type, "__name__", str(target_type))
+    if target_type is bool or type_name == "bool":
         return raw.strip().lower() in ("1", "true", "yes", "on")
-    if target_type is int:
+    if target_type is int or type_name == "int":
         return int(raw) if raw.strip() else 0
-    if target_type is float:
+    if target_type is float or type_name == "float":
         return float(raw) if raw.strip() else 0.0
     return raw
 
