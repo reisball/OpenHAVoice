@@ -46,6 +46,16 @@ LOW_RMS_MS = 0
 TTS_FILES: dict[str, bytes] = {}
 LOCAL_IP = ""
 
+# Device Overview stats (in-memory, reset on restart)
+STATS: dict[str, object] = {
+    "total_sessions": 0,
+    "last_session_at": None,
+    "last_stop_reason": None,
+    "last_session_duration_sec": None,
+    "device_name": None,
+    "connected": False,
+}
+
 VAD = webrtcvad.Vad(2)
 FRAME_MS = 30
 FRAME_BYTES = int(16000 * 2 * FRAME_MS / 1000)
@@ -151,9 +161,14 @@ async def tts_handler(request: web.Request) -> web.Response:
     return web.Response(body=data, headers={"Content-Type": "audio/wav"})
 
 
+async def status_handler(_request: web.Request) -> web.Response:
+    return web.json_response(dict(STATS))
+
+
 async def start_http_server() -> web.AppRunner:
     app = web.Application()
     app.router.add_get("/tts/{token}.wav", tts_handler)
+    app.router.add_get("/api/status", status_handler)
 
     # Config Web UI routes
     app.router.add_get("/config", config_get)
@@ -182,6 +197,7 @@ async def speak(text: str) -> None:
     print(f"TTS_READY {url} bytes={len(audio)} text={text!r}", flush=True)
     CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_TTS_START, {"text": text})
     CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_TTS_END, {"url": url})
+    STATS["last_tts_timestamp"] = time.time()
 
 
 async def finish(reason: str, abort: bool = False) -> None:
@@ -197,6 +213,15 @@ async def finish(reason: str, abort: bool = False) -> None:
         f"speech_ms={SPEECH_MS} silent_ms={SILENT_MS}",
         flush=True,
     )
+
+    duration = None
+    if STARTED_AT is not None:
+        duration = time.time() - STARTED_AT
+    if reason:
+        STATS["total_sessions"] = STATS.get("total_sessions", 0) + 1
+        STATS["last_stop_reason"] = reason
+        STATS["last_session_at"] = time.time()
+        STATS["last_session_duration_sec"] = round(duration, 1) if duration else None
 
     try:
         CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_STT_VAD_END, None)
@@ -221,6 +246,8 @@ async def finish(reason: str, abort: bool = False) -> None:
         CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_STT_END, {"text": text})
         CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_INTENT_START, None)
         CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_INTENT_END, None)
+        STATS["last_stt_text"] = text
+        STATS["last_llm_text"] = response_text
 
         response_text = await loop.run_in_executor(None, openclaw_chat, text)
         print(f"OPENCLAW_REPLY {response_text!r}", flush=True)
@@ -310,6 +337,8 @@ async def on_stop(abort: bool) -> None:
 async def run_connected(host: str, psk: str) -> None:
     """Hold one long-lived ESPHome API connection until it fails or is cancelled."""
     global CLIENT, STARTED_AT, STOPPING
+    STATS["device_name"] = None
+    STATS["connected"] = False
 
     CLIENT = APIClient(host, 6053, CFG.voice_password, noise_psk=psk)
     unsubscribe = None
@@ -322,6 +351,8 @@ async def run_connected(host: str, psk: str) -> None:
             f"session={session_key_for_device(info.name)!r}; press button and speak.",
             flush=True,
         )
+        STATS["device_name"] = info.name
+        STATS["connected"] = True
         unsubscribe = CLIENT.subscribe_voice_assistant(
             handle_start=on_start,
             handle_stop=on_stop,
@@ -344,6 +375,7 @@ async def run_connected(host: str, psk: str) -> None:
         CLIENT = None
         STARTED_AT = None
         STOPPING = False
+        STATS["connected"] = False
 
 
 async def connection_loop(host: str, psk: str) -> None:
@@ -528,6 +560,9 @@ async def config_ui(request: web.Request) -> web.Response:
   .msg.ok {{ display: block; background: var(--green-bg); color: var(--green); }}
   .msg.err {{ display: block; background: var(--red-bg); color: var(--red); }}
   .readonly {{ opacity: .78; }}
+  .status-dot {{ display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }}
+  .status-dot.on {{ background: var(--green); box-shadow: 0 0 6px var(--green); }}
+  .status-dot.off {{ background: var(--red); box-shadow: 0 0 6px var(--red); }}
   @media (max-width: 860px) {{ .grid, .fields {{ grid-template-columns: 1fr; }} header {{ display: block; }} }}
 </style>
 </head>
@@ -539,6 +574,20 @@ async def config_ui(request: web.Request) -> web.Response:
       <div class="sub">Aktuelle Werte bearbeiten. Hinweise zeigen die Defaults; leere Secret-Felder behalten den aktuellen Wert.</div>
     </div>
   </header>
+
+  <!-- Device Overview Dashboard -->
+  <div class="card wide" id="device-card">
+    <h2>Device Status</h2>
+    <div class="fields" style="grid-template-columns: repeat(3, 1fr);" id="device-overview">
+      <div class="field"><label>Device</label><span id="dv-device" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
+      <div class="field"><label>Status</label><span id="dv-status" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
+      <div class="field"><label>Sessions</label><span id="dv-sessions" class="current" style="max-width:100%;font-size:1rem;">0</span></div>
+      <div class="field"><label>Last Session</label><span id="dv-last" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
+      <div class="field"><label>Duration</label><span id="dv-duration" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
+      <div class="field"><label>Last Stop</label><span id="dv-stop" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
+      <div class="field full" style="grid-column:1/-1;"><label>Last Transcript</label><span id="dv-transcript" class="current" style="max-width:100%;font-size:.9rem;text-transform:none;letter-spacing:0;color:var(--muted);">—</span></div>
+    </div>
+  </div>
 
   <div class="authbar">
     <button class="secondary" type="button" id="load-btn">Load current values</button>
@@ -666,6 +715,31 @@ async function reloadConfig() {{
   if (!r.ok) {{ msg('✗ ' + (result.error || 'Reload failed'), 'err'); return; }}
   msg('✓ Reloaded from file'); await loadConfig();
 }}
+async function updateDeviceOverview() {{
+  try {{
+    const r = await fetch('/api/status');
+    const s = await r.json();
+    document.getElementById('dv-device').textContent = s.device_name || '—';
+    document.getElementById('dv-status').textContent = s.connected ? 'Connected' : 'Disconnected';
+    document.getElementById('dv-status').style.color = s.connected ? 'var(--green)' : 'var(--red)';
+    document.getElementById('dv-sessions').textContent = s.total_sessions || 0;
+    document.getElementById('dv-last').textContent = s.last_session_at
+      ? new Date(s.last_session_at * 1000).toLocaleTimeString()
+      : '—';
+    document.getElementById('dv-duration').textContent = s.last_session_duration_sec != null
+      ? s.last_session_duration_sec.toFixed(1) + 's'
+      : '—';
+    document.getElementById('dv-stop').textContent = s.last_stop_reason || '—';
+    const trans = s.last_stt_text
+      ? (s.last_stt_text.length > 80 ? s.last_stt_text.slice(0, 80) + '...' : s.last_stt_text)
+      : '—';
+    document.getElementById('dv-transcript').textContent = trans;
+  }} catch {{ /* ignore */ }}
+}}
+setInterval(updateDeviceOverview, 3000);
+updateDeviceOverview();
+}}}}
+
 document.getElementById('load-btn').addEventListener('click', loadConfig);
 document.getElementById('reload-btn').addEventListener('click', reloadConfig);
 document.getElementById('config-form').addEventListener('submit', saveConfig);
