@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import io
 import json
 import os
 import socket
@@ -78,6 +79,17 @@ def write_wav(path: Path, pcm: bytes) -> None:
         wav.setsampwidth(2)
         wav.setframerate(16000)
         wav.writeframes(pcm)
+
+
+def wav_duration_seconds(data: bytes) -> float | None:
+    try:
+        with wave.open(io.BytesIO(data), "rb") as wav:
+            rate = wav.getframerate()
+            if not rate:
+                return None
+            return wav.getnframes() / rate
+    except Exception:
+        return None
 
 
 def transcribe(path: Path) -> str:
@@ -203,6 +215,9 @@ async def speak(text: str) -> None:
     CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_TTS_START, {"text": text})
     CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_TTS_END, {"url": url})
     STATS["last_tts_timestamp"] = time.time()
+    STATS["last_out_at"] = STATS["last_tts_timestamp"]
+    out_duration = wav_duration_seconds(audio)
+    STATS["last_out_duration_sec"] = round(out_duration, 1) if out_duration is not None else None
 
 
 async def finish(reason: str, abort: bool = False) -> None:
@@ -222,6 +237,7 @@ async def finish(reason: str, abort: bool = False) -> None:
     duration = None
     if STARTED_AT is not None:
         duration = time.time() - STARTED_AT
+    input_duration = size / 32000 if size else None
     if reason:
         STATS["last_stop_reason"] = reason
         STATS["last_session_at"] = time.time()
@@ -233,6 +249,8 @@ async def finish(reason: str, abort: bool = False) -> None:
         print(f"WARN vad_end failed {exc!r}", flush=True)
 
     if abort or size < 3200 or SPEECH_MS < CFG.min_speech_ms:
+        if STARTED_AT is not None:
+            STATS["last_turn_duration_sec"] = round(time.time() - STARTED_AT, 1)
         try:
             CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_RUN_END, None)
         except Exception:
@@ -246,6 +264,8 @@ async def finish(reason: str, abort: bool = False) -> None:
     loop = asyncio.get_running_loop()
     try:
         text = await loop.run_in_executor(None, transcribe, wav_path)
+        STATS["last_in_at"] = time.time()
+        STATS["last_in_duration_sec"] = round(input_duration, 1) if input_duration is not None else None
         print(f"TRANSCRIPT {text!r}", flush=True)
         CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_STT_END, {"text": text})
         CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_INTENT_START, None)
@@ -262,6 +282,8 @@ async def finish(reason: str, abort: bool = False) -> None:
     except Exception as exc:  # noqa: BLE001
         print(f"ROUNDTRIP_FAILED {exc!r}", flush=True)
     finally:
+        if STARTED_AT is not None:
+            STATS["last_turn_duration_sec"] = round(time.time() - STARTED_AT, 1)
         try:
             CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_RUN_END, None)
         except Exception:
@@ -599,8 +621,11 @@ async def config_ui(request: web.Request) -> web.Response:
       <div class="field"><label>Device</label><span id="dv-device" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
       <div class="field"><label>Status</label><span id="dv-status" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
       <div class="field"><label>Sessions</label><span id="dv-sessions" class="current" style="max-width:100%;font-size:1rem;">0</span></div>
-      <div class="field"><label>Last Session</label><span id="dv-last" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
-      <div class="field"><label>Duration</label><span id="dv-duration" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
+      <div class="field"><label>Last In</label><span id="dv-in-at" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
+      <div class="field"><label>In Duration</label><span id="dv-in-duration" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
+      <div class="field"><label>Last Out</label><span id="dv-out-at" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
+      <div class="field"><label>Out Duration</label><span id="dv-out-duration" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
+      <div class="field"><label>Turn Duration</label><span id="dv-turn-duration" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
       <div class="field"><label>Last Stop</label><span id="dv-stop" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
     </div>
   </div>
@@ -754,11 +779,20 @@ async function updateDeviceOverview() {{
       ? formatDateTime(s.service_started_at)
       : '—';
     document.getElementById('svc-uptime').textContent = formatDuration(s.service_uptime_sec);
-    document.getElementById('dv-last').textContent = s.last_session_at
-      ? new Date(s.last_session_at * 1000).toLocaleTimeString()
+    document.getElementById('dv-in-at').textContent = s.last_in_at
+      ? new Date(s.last_in_at * 1000).toLocaleTimeString()
       : '—';
-    document.getElementById('dv-duration').textContent = s.last_session_duration_sec != null
-      ? s.last_session_duration_sec.toFixed(1) + 's'
+    document.getElementById('dv-in-duration').textContent = s.last_in_duration_sec != null
+      ? s.last_in_duration_sec.toFixed(1) + 's'
+      : '—';
+    document.getElementById('dv-out-at').textContent = s.last_out_at
+      ? new Date(s.last_out_at * 1000).toLocaleTimeString()
+      : '—';
+    document.getElementById('dv-out-duration').textContent = s.last_out_duration_sec != null
+      ? s.last_out_duration_sec.toFixed(1) + 's'
+      : '—';
+    document.getElementById('dv-turn-duration').textContent = s.last_turn_duration_sec != null
+      ? s.last_turn_duration_sec.toFixed(1) + 's'
       : '—';
     document.getElementById('dv-stop').textContent = s.last_stop_reason || '—';
   }} catch {{ /* ignore */ }}
