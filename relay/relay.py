@@ -738,7 +738,6 @@ async function updateDeviceOverview() {{
 }}
 setInterval(updateDeviceOverview, 3000);
 updateDeviceOverview();
-}}}}
 
 document.getElementById('load-btn').addEventListener('click', loadConfig);
 document.getElementById('reload-btn').addEventListener('click', reloadConfig);
