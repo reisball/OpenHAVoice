@@ -5,9 +5,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-WorkingDirectory=%h/projects/OpenHAVoice/relay
+WorkingDirectory=%h/projects/OpenHAVoice
+Environment=OPENHAVOICE_CONFIG_PATH=%h/.config/openhavoice/relay.env
 EnvironmentFile=%h/.config/openhavoice/relay.env
-ExecStart=%h/projects/OpenHAVoice/relay/.venv/bin/python %h/projects/OpenHAVoice/relay/relay.py
+ExecStart=%h/projects/OpenHAVoice/relay/.venv/bin/python -m relay.relay
 Restart=always
 RestartSec=5
 

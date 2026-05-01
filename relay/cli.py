@@ -67,7 +67,10 @@ def cmd_generate(config: RelayConfig, args: argparse.Namespace) -> None:
         ("OpenClaw Gateway", ["openclaw_url", "openclaw_token", "openclaw_session_key",
                               "openclaw_model", "openclaw_message_channel",
                               "openclaw_voice_system_prompt"]),
-        ("VAD / Capture", ["min_speech_ms", "end_silence_ms", "max_capture_seconds"]),
+        ("VAD / Capture", ["min_speech_ms", "end_silence_ms", "max_capture_seconds",
+                           "vad_aggressiveness", "rms_silence_threshold",
+                           "rms_end_silence_ms"]),
+        ("Config API", ["config_admin_token"]),
         ("Network / Reconnect", ["reconnect_initial_seconds", "reconnect_max_seconds"]),
     ]
 

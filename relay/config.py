@@ -7,14 +7,31 @@ the RelayConfig dataclass. Secret values are redacted in non-reveal exports.
 from __future__ import annotations
 
 import os
-import re
-from dataclasses import dataclass, field, fields
+from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
-ENV_PATH = Path(__file__).with_name(".env")
+LEGACY_ENV_PATH = Path(__file__).with_name(".env")
+DEFAULT_ENV_PATH = Path("~/.config/openhavoice/relay.env").expanduser()
 
-SECRET_KEYS = {"VOICE_PASSWORD", "VOICE_PSK", "OPENCLAW_TOKEN"}
+SECRET_KEYS = {"VOICE_PASSWORD", "VOICE_PSK", "OPENCLAW_TOKEN", "CONFIG_ADMIN_TOKEN"}
+
+
+def default_env_path() -> Path:
+    """Return the config file path used by CLI/Web saves.
+
+    Production installs keep secrets in ~/.config/openhavoice/relay.env.
+    OPENHAVOICE_CONFIG_PATH can override this; relay/.env remains supported for
+    older/dev checkouts that already have one.
+    """
+    configured = os.environ.get("OPENHAVOICE_CONFIG_PATH", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    if DEFAULT_ENV_PATH.exists():
+        return DEFAULT_ENV_PATH
+    if LEGACY_ENV_PATH.exists():
+        return LEGACY_ENV_PATH
+    return DEFAULT_ENV_PATH
 
 
 @dataclass
@@ -48,9 +65,15 @@ class RelayConfig:
     )
 
     # ── VAD / Capture ─────────────────────────────────────────
-    min_speech_ms: int = 300
+    min_speech_ms: int = 900
     end_silence_ms: int = 900
-    max_capture_seconds: float = 20.0
+    max_capture_seconds: float = 15.0
+    vad_aggressiveness: int = 2
+    rms_silence_threshold: int = 500
+    rms_end_silence_ms: int = 1200
+
+    # ── Web config API ────────────────────────────────────────
+    config_admin_token: str = ""  # secret; if empty, config API is localhost-only
 
     # ── Network / Reconnect ───────────────────────────────────
     reconnect_initial_seconds: float = 1.0
@@ -61,7 +84,7 @@ class RelayConfig:
     @classmethod
     def load(cls, path: Path | None = None) -> "RelayConfig":
         """Load config from .env file and environment variables."""
-        env = _read_dotenv(path or ENV_PATH)
+        env = _read_dotenv(path or default_env_path())
         values: dict[str, Any] = {}
         for fld in fields(cls):
             env_key = _field_to_env(fld.name)
@@ -72,8 +95,8 @@ class RelayConfig:
 
     def save(self, path: Path | None = None) -> None:
         """Write current config to .env file, preserving comments."""
-        target = path or ENV_PATH
-        current_env = _read_dotenv(target)
+        target = path or default_env_path()
+        target.parent.mkdir(parents=True, exist_ok=True)
         existing = target.read_text(encoding="utf-8") if target.exists() else ""
 
         new_lines: list[str] = []
@@ -139,6 +162,12 @@ class RelayConfig:
             errors.append("end_silence_ms must be >= 0")
         if self.max_capture_seconds <= 0:
             errors.append("max_capture_seconds must be > 0")
+        if not (0 <= self.vad_aggressiveness <= 3):
+            errors.append("vad_aggressiveness must be between 0 and 3")
+        if self.rms_silence_threshold < 0:
+            errors.append("rms_silence_threshold must be >= 0")
+        if self.rms_end_silence_ms < 0:
+            errors.append("rms_end_silence_ms must be >= 0")
         if self.reconnect_initial_seconds <= 0:
             errors.append("reconnect_initial_seconds must be > 0")
         if self.reconnect_max_seconds < self.reconnect_initial_seconds:

@@ -11,6 +11,7 @@ Config management: CLI via `python -m relay.cli`, Web UI via /config routes.
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
 import os
 import socket
@@ -26,7 +27,10 @@ import webrtcvad
 from aioesphomeapi import APIClient, VoiceAssistantEventType as E
 from aiohttp import web
 
-from .config import RelayConfig, load_config
+try:
+    from .config import RelayConfig, load_config
+except ImportError:  # Allows systemd/direct execution as relay/relay.py
+    from config import RelayConfig, load_config  # type: ignore[no-redef]
 
 CFG: RelayConfig = None  # type: ignore[assignment]  # set in main()
 
@@ -38,6 +42,7 @@ STOPPING = False
 SPEECH_SEEN = False
 SILENT_MS = 0
 SPEECH_MS = 0
+LOW_RMS_MS = 0
 TTS_FILES: dict[str, bytes] = {}
 LOCAL_IP = ""
 
@@ -233,7 +238,7 @@ async def finish(reason: str, abort: bool = False) -> None:
 
 
 async def on_start(conversation_id, flags, audio_settings, wake_word_phrase):
-    global STARTED_AT, STOPPING, SPEECH_SEEN, SILENT_MS, SPEECH_MS
+    global STARTED_AT, STOPPING, SPEECH_SEEN, SILENT_MS, SPEECH_MS, LOW_RMS_MS
     assert CLIENT is not None
     BUFFER.clear()
     STARTED_AT = time.time()
@@ -241,6 +246,7 @@ async def on_start(conversation_id, flags, audio_settings, wake_word_phrase):
     SPEECH_SEEN = False
     SILENT_MS = 0
     SPEECH_MS = 0
+    LOW_RMS_MS = 0
     print(
         f"START wake={wake_word_phrase!r} flags={flags} settings={audio_settings} conv={conversation_id!r}",
         flush=True,
@@ -252,10 +258,18 @@ async def on_start(conversation_id, flags, audio_settings, wake_word_phrase):
 
 
 async def on_audio(data: bytes) -> None:
-    global SPEECH_SEEN, SILENT_MS, SPEECH_MS
+    global SPEECH_SEEN, SILENT_MS, SPEECH_MS, LOW_RMS_MS
     if STOPPING:
         return
     BUFFER.extend(data)
+    chunk_rms = audioop.rms(data, 2)
+    chunk_ms = int(len(data) / 32)  # 16 kHz, 16-bit mono => 32 bytes/ms
+    rms_silence_threshold = CFG.rms_silence_threshold
+    if SPEECH_SEEN:
+        if chunk_rms < rms_silence_threshold:
+            LOW_RMS_MS += chunk_ms
+        else:
+            LOW_RMS_MS = 0
     voiced_in_chunk = False
     for offset in range(0, len(data) - FRAME_BYTES + 1, FRAME_BYTES):
         frame = data[offset : offset + FRAME_BYTES]
@@ -276,14 +290,17 @@ async def on_audio(data: bytes) -> None:
     if len(BUFFER) % (32000 * 2) < len(data):
         print(
             f"AUDIO seconds≈{len(BUFFER) / 32000:.1f} speech_ms={SPEECH_MS} "
-            f"silent_ms={SILENT_MS} rms={audioop.rms(data, 2)}",
+            f"silent_ms={SILENT_MS} low_rms_ms={LOW_RMS_MS} rms={chunk_rms}",
             flush=True,
         )
 
     end_silence_ms = CFG.end_silence_ms
+    rms_end_silence_ms = CFG.rms_end_silence_ms or end_silence_ms
     min_speech_ms = CFG.min_speech_ms
     if SPEECH_SEEN and SPEECH_MS >= min_speech_ms and SILENT_MS >= end_silence_ms:
         await finish("vad_silence")
+    elif SPEECH_SEEN and SPEECH_MS >= min_speech_ms and LOW_RMS_MS >= rms_end_silence_ms:
+        await finish("rms_silence")
 
 
 async def on_stop(abort: bool) -> None:
@@ -349,6 +366,7 @@ async def connection_loop(host: str, psk: str) -> None:
 async def main() -> None:
     global LOCAL_IP, CFG
     CFG = load_config()
+    VAD.set_mode(CFG.vad_aggressiveness)
 
     errors = CFG.validate()
     if errors:
@@ -370,51 +388,106 @@ async def main() -> None:
 
 # ── Config Web UI handlers ───────────────────────────────────
 
+def _config_request_allowed(request: web.Request) -> bool:
+    """Protect config APIs while leaving /tts public for the Voice PE.
+
+    Without CONFIG_ADMIN_TOKEN, only localhost may access config endpoints.
+    With a token, clients must send either Authorization: Bearer <token> or
+    X-OpenHAVoice-Admin-Token: <token>. Secret reveal is never available via
+    HTTP; use the local CLI if you really need to inspect stored secrets.
+    """
+    token = CFG.config_admin_token.strip()
+    if token:
+        auth = request.headers.get("Authorization", "")
+        bearer = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
+        header_token = request.headers.get("X-OpenHAVoice-Admin-Token", "").strip()
+        return token in {bearer, header_token}
+
+    peer = request.remote or ""
+    return peer.startswith("127.") or peer.startswith("::ffff:127.") or peer in {"::1", "localhost"}
+
+
+def _require_config_auth(request: web.Request) -> web.Response | None:
+    if _config_request_allowed(request):
+        return None
+    return web.json_response(
+        {
+            "error": "Config API is protected",
+            "details": "Set CONFIG_ADMIN_TOKEN and send it as a Bearer token, or access from localhost.",
+        },
+        status=403,
+    )
+
+
 async def config_get(request: web.Request) -> web.Response:
-    """GET /config — return current config as JSON (secrets redacted)."""
-    reveal = request.query.get("reveal", "").lower() in ("1", "true", "yes")
-    return web.json_response(CFG.to_dict(reveal=reveal))
+    """GET /config — return current config as JSON, always redacting secrets."""
+    denied = _require_config_auth(request)
+    if denied is not None:
+        return denied
+    return web.json_response(CFG.to_dict(reveal=False))
 
 
 async def config_put(request: web.Request) -> web.Response:
     """PUT /config — update one or more config fields."""
+    global CFG
+    denied = _require_config_auth(request)
+    if denied is not None:
+        return denied
     try:
         body = await request.json()
     except json.JSONDecodeError:
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
+    candidate = copy.deepcopy(CFG)
     updated: list[str] = []
     errors: list[str] = []
+    secret_fields = {"VOICE_PSK", "VOICE_PASSWORD", "OPENCLAW_TOKEN", "CONFIG_ADMIN_TOKEN"}
     for key, value in body.items():
+        key_upper = str(key).upper()
+        # Browser password fields are empty/redacted placeholders unless explicitly changed.
+        if key_upper in secret_fields and str(value) in {"", "****"}:
+            continue
         try:
-            CFG.update(key, str(value))
-            updated.append(key)
+            candidate.update(str(key), str(value))
+            updated.append(str(key))
         except (KeyError, ValueError) as exc:
             errors.append(f"{key}: {exc}")
 
     if errors:
         return web.json_response({"error": "Validation failed", "details": errors}, status=400)
 
-    CFG.save()
-    validation_errors = CFG.validate()
+    validation_errors = candidate.validate()
+    if validation_errors:
+        return web.json_response({"error": "Validation failed", "details": validation_errors}, status=400)
+
+    candidate.save()
+    CFG = candidate
+    VAD.set_mode(CFG.vad_aggressiveness)
     return web.json_response({
         "ok": True,
         "updated": updated,
-        "validation_errors": validation_errors,
+        "config": CFG.to_dict(reveal=False),
     })
 
 
 async def config_validate(request: web.Request) -> web.Response:
     """POST /config/validate — validate current config without saving."""
+    denied = _require_config_auth(request)
+    if denied is not None:
+        return denied
     errors = CFG.validate()
     return web.json_response({"valid": len(errors) == 0, "errors": errors})
 
 
 async def config_reload(request: web.Request) -> web.Response:
-    """POST /config/reload — reload config from .env file."""
+    """POST /config/reload — reload config from env file."""
+    denied = _require_config_auth(request)
+    if denied is not None:
+        return denied
     try:
         global CFG
-        CFG = RelayConfig.load()
+        CFG = load_config()
+        VAD.set_mode(CFG.vad_aggressiveness)
         errors = CFG.validate()
         return web.json_response({
             "ok": True,
@@ -492,6 +565,13 @@ async def config_ui(request: web.Request) -> web.Response:
     <label>MIN_SPEECH_MS</label><input name="MIN_SPEECH_MS" type="number">
     <label>END_SILENCE_MS</label><input name="END_SILENCE_MS" type="number">
     <label>MAX_CAPTURE_SECONDS</label><input name="MAX_CAPTURE_SECONDS" type="number" step="0.1">
+    <label>VAD_AGGRESSIVENESS</label><input name="VAD_AGGRESSIVENESS" type="number" min="0" max="3">
+    <label>RMS_SILENCE_THRESHOLD</label><input name="RMS_SILENCE_THRESHOLD" type="number">
+    <label>RMS_END_SILENCE_MS</label><input name="RMS_END_SILENCE_MS" type="number">
+  </section>
+  <section>
+    <h2>Config API</h2>
+    <label class="secret">CONFIG_ADMIN_TOKEN</label><input name="CONFIG_ADMIN_TOKEN" type="password" placeholder="leave blank to keep existing">
   </section>
   <section>
     <h2>Network / Reconnect</h2>
@@ -501,9 +581,20 @@ async def config_ui(request: web.Request) -> web.Response:
   <button type="submit">Save Configuration</button>
 </form>
 <script>
+function authHeaders(extra = {}) {
+  const token = localStorage.getItem('openhavoiceConfigToken') || prompt('Config admin token (blank for localhost-only access):') || '';
+  if (token) localStorage.setItem('openhavoiceConfigToken', token);
+  return token ? {...extra, 'Authorization': 'Bearer ' + token} : extra;
+}
 async function load() {
-  const r = await fetch('/config');
+  const r = await fetch('/config', { headers: authHeaders() });
   const cfg = await r.json();
+  if (!r.ok) {
+    const msg = document.getElementById('msg');
+    msg.className = 'msg err';
+    msg.textContent = '✗ ' + (cfg.error || 'Config load failed');
+    return;
+  }
   const form = document.getElementById('config-form');
   for (const [key, val] of Object.entries(cfg)) {
     const el = form.elements[key.toUpperCase()];
@@ -518,13 +609,12 @@ document.getElementById('config-form').addEventListener('submit', async (e) => {
     if (el.name) data[el.name] = el.value;
   }
   const r = await fetch('/config', { method: 'PUT',
-    headers: {'Content-Type': 'application/json'}, body: JSON.stringify(data) });
+    headers: authHeaders({'Content-Type': 'application/json'}), body: JSON.stringify(data) });
   const result = await r.json();
   const msg = document.getElementById('msg');
   if (r.ok) {
     msg.className = 'msg ok';
-    msg.textContent = '✓ Saved. ' + (result.validation_errors?.length
-      ? 'Warnings: ' + result.validation_errors.join('; ') : 'Config valid.');
+    msg.textContent = '✓ Saved. ' + (result.updated?.length ? 'Updated: ' + result.updated.join(', ') : 'No changes.');
   } else {
     msg.className = 'msg err';
     msg.textContent = '✗ ' + (result.error || result.details?.join(', ') || 'Unknown error');
