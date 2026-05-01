@@ -151,7 +151,13 @@ def synthesize(text: str) -> bytes:
     }
     response = requests.post(url, json=payload, timeout=90)
     response.raise_for_status()
-    return response.content
+    audio = response.content
+    duration = wav_duration_seconds(audio)
+    if duration is None or duration <= 0:
+        raise RuntimeError(
+            f"Orpheus returned invalid/empty WAV: bytes={len(audio)} duration={duration}"
+        )
+    return audio
 
 
 def session_key_for_device(device_name: str | None = None) -> str:
