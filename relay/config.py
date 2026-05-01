@@ -14,7 +14,7 @@ from typing import Any
 LEGACY_ENV_PATH = Path(__file__).with_name(".env")
 DEFAULT_ENV_PATH = Path("~/.config/openhavoice/relay.env").expanduser()
 
-SECRET_KEYS = {"VOICE_PASSWORD", "VOICE_PSK", "OPENCLAW_TOKEN", "CONFIG_ADMIN_TOKEN"}
+SECRET_KEYS = {"VOICE_PASSWORD", "VOICE_PSK", "VOICE_DEVICES", "OPENCLAW_TOKEN", "CONFIG_ADMIN_TOKEN"}
 
 
 def default_env_path() -> Path:
@@ -40,6 +40,7 @@ class RelayConfig:
     voice_host: str = ""
     voice_psk: str = ""  # secret
     voice_password: str = ""  # secret
+    voice_devices: str = ""  # secret JSON list: [{name, host, psk, password}]
 
     # ── STT (Whisper) ─────────────────────────────────────────
     whisper_url: str = "http://192.168.50.51:8000/v1/audio/transcriptions"

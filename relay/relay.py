@@ -182,10 +182,105 @@ async def status_handler(_request: web.Request) -> web.Response:
     return web.json_response(data)
 
 
+def _load_voice_devices(reveal: bool = False) -> list[dict[str, str]]:
+    try:
+        raw = json.loads(CFG.voice_devices or "[]")
+    except json.JSONDecodeError:
+        raw = []
+    devices: list[dict[str, str]] = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        host = str(item.get("host", "")).strip()
+        if not host:
+            continue
+        device = {
+            "name": name or host,
+            "host": host,
+            "psk": str(item.get("psk", "")),
+            "password": str(item.get("password", "")),
+        }
+        if not reveal:
+            device["psk"] = "****" if device["psk"] else ""
+            device["password"] = "****" if device["password"] else ""
+        devices.append(device)
+    return devices
+
+
+def _save_voice_devices(devices: list[dict[str, str]]) -> None:
+    CFG.voice_devices = json.dumps(devices, ensure_ascii=False, separators=(",", ":"))
+    CFG.save()
+
+
+async def devices_get(request: web.Request) -> web.Response:
+    denied = _require_config_auth(request)
+    if denied is not None:
+        return denied
+    return web.json_response({
+        "active_host": CFG.voice_host,
+        "devices": _load_voice_devices(reveal=False),
+    })
+
+
+async def devices_put(request: web.Request) -> web.Response:
+    global CFG, LOCAL_IP
+    denied = _require_config_auth(request)
+    if denied is not None:
+        return denied
+    try:
+        body = await request.json()
+    except json.JSONDecodeError:
+        return web.json_response({"error": "Invalid JSON"}, status=400)
+
+    name = str(body.get("name", "")).strip()
+    host = str(body.get("host", "")).strip()
+    psk = str(body.get("psk", "")).strip()
+    password = str(body.get("password", "")).strip()
+    activate = bool(body.get("activate", False))
+    if not host:
+        return web.json_response({"error": "host is required"}, status=400)
+
+    devices = _load_voice_devices(reveal=True)
+    existing = next((d for d in devices if d.get("host") == host), None)
+    if existing is None:
+        if not psk:
+            return web.json_response({"error": "psk is required for new devices"}, status=400)
+        existing = {"name": name or host, "host": host, "psk": psk, "password": password}
+        devices.append(existing)
+    else:
+        existing["name"] = name or existing.get("name") or host
+        if psk and psk != "****":
+            existing["psk"] = psk
+        if password and password != "****":
+            existing["password"] = password
+
+    if activate:
+        if not existing.get("psk"):
+            return web.json_response({"error": "selected device has no psk"}, status=400)
+        CFG.voice_host = existing["host"]
+        CFG.voice_psk = existing["psk"]
+        CFG.voice_password = existing.get("password", "")
+        try:
+            LOCAL_IP = local_ip_for(CFG.voice_host)
+        except Exception:
+            pass
+
+    _save_voice_devices(devices)
+    return web.json_response({
+        "ok": True,
+        "active_host": CFG.voice_host,
+        "devices": _load_voice_devices(reveal=False),
+        "restart_required": activate,
+    })
+
+
 async def start_http_server() -> web.AppRunner:
     app = web.Application()
     app.router.add_get("/tts/{token}.wav", tts_handler)
     app.router.add_get("/api/status", status_handler)
+    app.router.add_get("/api/devices", devices_get)
+    app.router.add_put("/api/devices", devices_put)
 
     # Config Web UI routes
     app.router.add_get("/config", config_get)
@@ -487,7 +582,7 @@ async def config_put(request: web.Request) -> web.Response:
     candidate = copy.deepcopy(CFG)
     updated: list[str] = []
     errors: list[str] = []
-    secret_fields = {"VOICE_PSK", "VOICE_PASSWORD", "OPENCLAW_TOKEN", "CONFIG_ADMIN_TOKEN"}
+    secret_fields = {"VOICE_PSK", "VOICE_PASSWORD", "VOICE_DEVICES", "OPENCLAW_TOKEN", "CONFIG_ADMIN_TOKEN"}
     for key, value in body.items():
         key_upper = str(key).upper()
         # Browser password fields are empty/redacted placeholders unless explicitly changed.
@@ -578,8 +673,8 @@ async def config_ui(request: web.Request) -> web.Response:
   .section-divider {{ grid-column: 1 / -1; border-top: 1px solid var(--line); margin: 4px 0 2px; padding-top: 12px; color: var(--orange); font-size: .72rem; font-weight: 800; letter-spacing: .08em; text-transform: uppercase; }}
   label {{ display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: .76rem; font-weight: 700; letter-spacing: .04em; margin-bottom: 5px; }}
   .current {{ color: var(--blue); font-weight: 600; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; letter-spacing: 0; }}
-  input, textarea {{ width: 100%; padding: 9px 10px; background: #0d1117; border: 1px solid var(--line); border-radius: 8px; color: var(--text); font: inherit; }}
-  input:focus, textarea:focus {{ outline: none; border-color: var(--blue); box-shadow: 0 0 0 2px #58a6ff33; }}
+  input, textarea, select {{ width: 100%; padding: 9px 10px; background: #0d1117; border: 1px solid var(--line); border-radius: 8px; color: var(--text); font: inherit; }}
+  input:focus, textarea:focus, select:focus {{ outline: none; border-color: var(--blue); box-shadow: 0 0 0 2px #58a6ff33; }}
   textarea {{ resize: vertical; min-height: 82px; }}
   .hint {{ color: var(--muted); font-size: .76rem; margin-top: 4px; }}
   .hint code {{ color: #d2a8ff; background: #111722; padding: 1px 4px; border-radius: 4px; }}
@@ -639,7 +734,20 @@ async def config_ui(request: web.Request) -> web.Response:
   <form id="config-form">
     <div class="grid">
       <section class="card">
-        <h2>Voice PE</h2>
+        <h2>Voice PE Devices</h2>
+        <div class="fields">
+          <div class="field full"><label>Known Devices</label><select id="voice-device-select"><option value="">Manual / new device…</option></select><div class="hint">Auswählen lädt Name/Host; PSK bleibt serverseitig verborgen.</div></div>
+          <div class="field"><label>Device Name</label><input id="voice-device-name" placeholder="home-assistant-voice-…"></div>
+          <div class="field"><label>Host / IP</label><input id="voice-device-host" placeholder="192.168.50.xxx"></div>
+          <div class="field"><label>Noise PSK</label><input id="voice-device-psk" type="password" placeholder="leave blank to keep existing"><div class="hint">Secret wird gespeichert, aber nie angezeigt.</div></div>
+          <div class="field"><label>Password</label><input id="voice-device-password" type="password" placeholder="optional / leave blank"></div>
+        </div>
+        <div class="actions">
+          <button class="secondary" type="button" id="voice-device-save">Save device</button>
+          <button type="button" id="voice-device-activate">Save & activate</button>
+        </div>
+        <div class="hint">Aktivieren aktualisiert <code>VOICE_HOST</code>/<code>VOICE_PSK</code>; Verbindung wechselt nach Relay-Neustart.</div>
+        <div class="section-divider">Active low-level config</div>
         <div class="fields">
           <div class="field"><label>VOICE_HOST <span class="current" data-current="VOICE_HOST"></span></label><input name="VOICE_HOST" required></div>
           <div class="field"><label>VOICE_PSK <span class="current" data-current="VOICE_PSK"></span></label><input name="VOICE_PSK" type="password" placeholder="leave blank to keep existing"><div class="hint">Default: leer · Secret bleibt serverseitig gespeichert.</div></div>
@@ -709,7 +817,7 @@ async def config_ui(request: web.Request) -> web.Response:
 </main>
 <script>
 const DEFAULTS = {defaults_json};
-const SECRET_FIELDS = new Set(['VOICE_PSK', 'VOICE_PASSWORD', 'OPENCLAW_TOKEN', 'CONFIG_ADMIN_TOKEN']);
+const SECRET_FIELDS = new Set(['VOICE_PSK', 'VOICE_PASSWORD', 'VOICE_DEVICES', 'OPENCLAW_TOKEN', 'CONFIG_ADMIN_TOKEN']);
 const fieldNames = Object.keys(DEFAULTS).map(k => k.toUpperCase());
 function msg(text, kind='ok') {{ const el = document.getElementById('msg'); el.className = 'msg ' + kind; el.textContent = text; }}
 function headers(extra={{}}) {{ return extra; }}
@@ -757,6 +865,47 @@ async function reloadConfig() {{
   const result = await r.json().catch(() => ({{error: 'Invalid response'}}));
   if (!r.ok) {{ msg('✗ ' + (result.error || 'Reload failed'), 'err'); return; }}
   msg('✓ Reloaded from file'); await loadConfig();
+}}
+let voiceDevices = [];
+function fillDeviceMenu(activeHost='') {{
+  const sel = document.getElementById('voice-device-select');
+  sel.innerHTML = '<option value="">Manual / new device…</option>';
+  for (const d of voiceDevices) {{
+    const opt = document.createElement('option');
+    opt.value = d.host; opt.textContent = `${{d.name || d.host}} (${{d.host}})`;
+    if (d.host === activeHost) opt.selected = true;
+    sel.appendChild(opt);
+  }}
+}}
+function fillDeviceFields(host) {{
+  const d = voiceDevices.find(x => x.host === host);
+  document.getElementById('voice-device-name').value = d?.name || '';
+  document.getElementById('voice-device-host').value = d?.host || '';
+  document.getElementById('voice-device-psk').value = '';
+  document.getElementById('voice-device-password').value = '';
+}}
+async function loadDevices() {{
+  const r = await fetch('/api/devices');
+  const data = await r.json().catch(() => ({{devices: []}}));
+  if (!r.ok) return;
+  voiceDevices = data.devices || [];
+  fillDeviceMenu(data.active_host || '');
+  fillDeviceFields(document.getElementById('voice-device-select').value);
+}}
+async function saveVoiceDevice(activate=false) {{
+  const payload = {{
+    name: document.getElementById('voice-device-name').value,
+    host: document.getElementById('voice-device-host').value,
+    psk: document.getElementById('voice-device-psk').value,
+    password: document.getElementById('voice-device-password').value,
+    activate,
+  }};
+  const r = await fetch('/api/devices', {{ method: 'PUT', headers: headers({{'Content-Type':'application/json'}}), body: JSON.stringify(payload) }});
+  const result = await r.json().catch(() => ({{error: 'Invalid response'}}));
+  if (!r.ok) {{ msg('✗ ' + (result.error || 'Device save failed'), 'err'); return; }}
+  voiceDevices = result.devices || []; fillDeviceMenu(result.active_host || payload.host); fillDeviceFields(payload.host);
+  await loadConfig();
+  msg('✓ Device saved' + (result.restart_required ? '. Restart relay to switch connection.' : '.'));
 }}
 function formatDateTime(ts) {{
   return new Date(ts * 1000).toLocaleString([], {{ dateStyle: 'short', timeStyle: 'medium' }});
@@ -806,8 +955,12 @@ updateDeviceOverview();
 
 document.getElementById('reload-btn').addEventListener('click', reloadConfig);
 document.getElementById('config-form').addEventListener('submit', saveConfig);
+document.getElementById('voice-device-select').addEventListener('change', e => fillDeviceFields(e.target.value));
+document.getElementById('voice-device-save').addEventListener('click', () => saveVoiceDevice(false));
+document.getElementById('voice-device-activate').addEventListener('click', () => saveVoiceDevice(true));
 applyDefaultHints();
 loadConfig();
+loadDevices();
 </script>
 </body>
 </html>"""
