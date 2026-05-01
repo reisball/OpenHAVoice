@@ -585,7 +585,6 @@ async def config_ui(request: web.Request) -> web.Response:
       <div class="field"><label>Last Session</label><span id="dv-last" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
       <div class="field"><label>Duration</label><span id="dv-duration" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
       <div class="field"><label>Last Stop</label><span id="dv-stop" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
-      <div class="field full" style="grid-column:1/-1;"><label>Last Transcript</label><span id="dv-transcript" class="current" style="max-width:100%;font-size:.9rem;text-transform:none;letter-spacing:0;color:var(--muted);">—</span></div>
     </div>
   </div>
 
@@ -730,10 +729,6 @@ async function updateDeviceOverview() {{
       ? s.last_session_duration_sec.toFixed(1) + 's'
       : '—';
     document.getElementById('dv-stop').textContent = s.last_stop_reason || '—';
-    const trans = s.last_stt_text
-      ? (s.last_stt_text.length > 80 ? s.last_stt_text.slice(0, 80) + '...' : s.last_stt_text)
-      : '—';
-    document.getElementById('dv-transcript').textContent = trans;
   }} catch {{ /* ignore */ }}
 }}
 setInterval(updateDeviceOverview, 3000);
