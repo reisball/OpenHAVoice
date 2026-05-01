@@ -130,6 +130,12 @@ systemctl --user enable --now openhavoice-relay.service
 journalctl --user -u openhavoice-relay.service -f
 ```
 
+## Custom wake words
+
+See [`docs/custom-wake-word.md`](docs/custom-wake-word.md) for the current custom wake-word options and constraints.
+
+Short version: OpenHAVoice currently uses the stock Voice PE firmware wake-word session flow. The relay does not detect wake words itself, so a phrase like `Hey Zoe` requires firmware/device support or a future custom-firmware/server-side wake-word experiment.
+
 ## Testing against a Voice PE that was already added to HA
 
 For direct relay testing with stock firmware:
