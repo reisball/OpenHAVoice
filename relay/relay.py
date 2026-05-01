@@ -45,6 +45,7 @@ SPEECH_MS = 0
 LOW_RMS_MS = 0
 TTS_FILES: dict[str, bytes] = {}
 LOCAL_IP = ""
+SERVICE_STARTED_AT = time.time()
 
 # Device Overview stats (in-memory, reset on restart)
 STATS: dict[str, object] = {
@@ -54,6 +55,7 @@ STATS: dict[str, object] = {
     "last_session_duration_sec": None,
     "device_name": None,
     "connected": False,
+    "service_started_at": SERVICE_STARTED_AT,
 }
 
 VAD = webrtcvad.Vad(2)
@@ -162,7 +164,10 @@ async def tts_handler(request: web.Request) -> web.Response:
 
 
 async def status_handler(_request: web.Request) -> web.Response:
-    return web.json_response(dict(STATS))
+    data = dict(STATS)
+    data["service_started_at"] = SERVICE_STARTED_AT
+    data["service_uptime_sec"] = round(time.time() - SERVICE_STARTED_AT, 1)
+    return web.json_response(data)
 
 
 async def start_http_server() -> web.AppRunner:
@@ -218,10 +223,9 @@ async def finish(reason: str, abort: bool = False) -> None:
     if STARTED_AT is not None:
         duration = time.time() - STARTED_AT
     if reason:
-        STATS["total_sessions"] = STATS.get("total_sessions", 0) + 1
         STATS["last_stop_reason"] = reason
         STATS["last_session_at"] = time.time()
-        STATS["last_session_duration_sec"] = round(duration, 1) if duration else None
+        STATS["last_session_duration_sec"] = round(duration, 1) if duration is not None else None
 
     try:
         CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_STT_VAD_END, None)
@@ -247,9 +251,9 @@ async def finish(reason: str, abort: bool = False) -> None:
         CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_INTENT_START, None)
         CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_INTENT_END, None)
         STATS["last_stt_text"] = text
-        STATS["last_llm_text"] = response_text
 
         response_text = await loop.run_in_executor(None, openclaw_chat, text)
+        STATS["last_llm_text"] = response_text
         print(f"OPENCLAW_REPLY {response_text!r}", flush=True)
         await speak(response_text)
         post_tts_grace_seconds = CFG.tts_post_playback_grace_seconds
@@ -274,6 +278,8 @@ async def on_start(conversation_id, flags, audio_settings, wake_word_phrase):
     SILENT_MS = 0
     SPEECH_MS = 0
     LOW_RMS_MS = 0
+    STATS["total_sessions"] = STATS.get("total_sessions", 0) + 1
+    STATS["current_session_started_at"] = STARTED_AT
     print(
         f"START wake={wake_word_phrase!r} flags={flags} settings={audio_settings} conv={conversation_id!r}",
         flush=True,
@@ -583,9 +589,11 @@ async def config_ui(request: web.Request) -> web.Response:
       <div class="field"><label>Device</label><span id="dv-device" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
       <div class="field"><label>Status</label><span id="dv-status" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
       <div class="field"><label>Sessions</label><span id="dv-sessions" class="current" style="max-width:100%;font-size:1rem;">0</span></div>
+      <div class="field"><label>Service Start</label><span id="dv-service-start" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
+      <div class="field"><label>Uptime</label><span id="dv-uptime" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
+      <div class="field"><label>Last Stop</label><span id="dv-stop" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
       <div class="field"><label>Last Session</label><span id="dv-last" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
       <div class="field"><label>Duration</label><span id="dv-duration" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
-      <div class="field"><label>Last Stop</label><span id="dv-stop" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
     </div>
   </div>
 
@@ -712,6 +720,16 @@ async function reloadConfig() {{
   if (!r.ok) {{ msg('✗ ' + (result.error || 'Reload failed'), 'err'); return; }}
   msg('✓ Reloaded from file'); await loadConfig();
 }}
+function formatDuration(seconds) {{
+  if (seconds == null) return '—';
+  seconds = Math.max(0, Math.floor(seconds));
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const sec = seconds % 60;
+  if (h > 0) return `${{h}}h ${{m}}m`;
+  if (m > 0) return `${{m}}m ${{sec}}s`;
+  return `${{sec}}s`;
+}}
 async function updateDeviceOverview() {{
   try {{
     const r = await fetch('/api/status');
@@ -720,6 +738,10 @@ async function updateDeviceOverview() {{
     document.getElementById('dv-status').textContent = s.connected ? 'Connected' : 'Disconnected';
     document.getElementById('dv-status').style.color = s.connected ? 'var(--green)' : 'var(--red)';
     document.getElementById('dv-sessions').textContent = s.total_sessions || 0;
+    document.getElementById('dv-service-start').textContent = s.service_started_at
+      ? new Date(s.service_started_at * 1000).toLocaleTimeString()
+      : '—';
+    document.getElementById('dv-uptime').textContent = formatDuration(s.service_uptime_sec);
     document.getElementById('dv-last').textContent = s.last_session_at
       ? new Date(s.last_session_at * 1000).toLocaleTimeString()
       : '—';
