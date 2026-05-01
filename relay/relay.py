@@ -388,23 +388,9 @@ async def main() -> None:
 
 # ── Config Web UI handlers ───────────────────────────────────
 
-def _config_request_allowed(request: web.Request) -> bool:
-    """Protect config APIs while leaving /tts public for the Voice PE.
-
-    Without CONFIG_ADMIN_TOKEN, only localhost may access config endpoints.
-    With a token, clients must send either Authorization: Bearer <token> or
-    X-OpenHAVoice-Admin-Token: <token>. Secret reveal is never available via
-    HTTP; use the local CLI if you really need to inspect stored secrets.
-    """
-    token = CFG.config_admin_token.strip()
-    if token:
-        auth = request.headers.get("Authorization", "")
-        bearer = auth.removeprefix("Bearer ").strip() if auth.startswith("Bearer ") else ""
-        header_token = request.headers.get("X-OpenHAVoice-Admin-Token", "").strip()
-        return token in {bearer, header_token}
-
-    peer = request.remote or ""
-    return peer.startswith("127.") or peer.startswith("::ffff:127.") or peer in {"::1", "localhost"}
+def _config_request_allowed(_request: web.Request) -> bool:
+    """Always allow config API access."""
+    return True
 
 
 def _require_config_auth(request: web.Request) -> web.Response | None:
@@ -413,7 +399,7 @@ def _require_config_auth(request: web.Request) -> web.Response | None:
     return web.json_response(
         {
             "error": "Config API is protected",
-            "details": "Set CONFIG_ADMIN_TOKEN and send it as a Bearer token, or access from localhost.",
+            "details": "Config API is open (no admin token configured).",
         },
         status=403,
     )
@@ -519,9 +505,8 @@ async def config_ui(request: web.Request) -> web.Response:
   header {{ display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 16px; }}
   h1 {{ color: var(--blue); margin: 0; font-size: clamp(24px, 3vw, 34px); letter-spacing: -.02em; }}
   .sub {{ color: var(--muted); margin-top: 4px; }}
-  .authbar {{ display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center;
+  .authbar {{ display: flex; gap: 8px; align-items: center;
     background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px; margin-bottom: 12px; }}
-  .authbar input {{ margin: 0; }}
   .grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }}
   .card {{ background: linear-gradient(180deg, var(--panel), var(--panel2)); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }}
   .wide {{ grid-column: 1 / -1; }}
@@ -543,7 +528,7 @@ async def config_ui(request: web.Request) -> web.Response:
   .msg.ok {{ display: block; background: var(--green-bg); color: var(--green); }}
   .msg.err {{ display: block; background: var(--red-bg); color: var(--red); }}
   .readonly {{ opacity: .78; }}
-  @media (max-width: 860px) {{ .grid, .fields {{ grid-template-columns: 1fr; }} .authbar {{ grid-template-columns: 1fr; }} header {{ display: block; }} }}
+  @media (max-width: 860px) {{ .grid, .fields {{ grid-template-columns: 1fr; }} header {{ display: block; }} }}
 </style>
 </head>
 <body>
@@ -556,9 +541,7 @@ async def config_ui(request: web.Request) -> web.Response:
   </header>
 
   <div class="authbar">
-    <input id="admin-token" type="password" placeholder="CONFIG_ADMIN_TOKEN für LAN-Zugriff einfügen">
     <button class="secondary" type="button" id="load-btn">Load current values</button>
-    <button class="secondary" type="button" id="clear-token-btn">Forget token</button>
   </div>
   <div id="msg" class="msg"></div>
 
@@ -637,9 +620,7 @@ const DEFAULTS = {defaults_json};
 const SECRET_FIELDS = new Set(['VOICE_PSK', 'VOICE_PASSWORD', 'OPENCLAW_TOKEN', 'CONFIG_ADMIN_TOKEN']);
 const fieldNames = Object.keys(DEFAULTS).map(k => k.toUpperCase());
 function msg(text, kind='ok') {{ const el = document.getElementById('msg'); el.className = 'msg ' + kind; el.textContent = text; }}
-function token() {{ return document.getElementById('admin-token').value || localStorage.getItem('openhavoiceConfigToken') || ''; }}
-function headers(extra={{}}) {{ const t = token(); return t ? {{...extra, 'Authorization': 'Bearer ' + t}} : extra; }}
-function rememberToken() {{ const t = document.getElementById('admin-token').value.trim(); if (t) localStorage.setItem('openhavoiceConfigToken', t); }}
+function headers(extra={{}}) {{ return extra; }}
 function applyDefaultHints() {{
   for (const name of fieldNames) {{
     const input = document.querySelector(`[name="${{name}}"]`);
@@ -664,14 +645,14 @@ function fillForm(cfg) {{
   }}
 }}
 async function loadConfig() {{
-  rememberToken(); applyDefaultHints();
+  applyDefaultHints();
   const r = await fetch('/config', {{ headers: headers() }});
   const data = await r.json().catch(() => ({{error: 'Invalid response'}}));
   if (!r.ok) {{ msg('✗ ' + (data.details || data.error || 'Config load failed'), 'err'); return; }}
   fillForm(data); msg('✓ Current values loaded');
 }}
 async function saveConfig(e) {{
-  e.preventDefault(); rememberToken();
+  e.preventDefault();
   const form = e.target; const data = {{}};
   for (const el of form.elements) if (el.name) data[el.name] = el.value;
   const r = await fetch('/config', {{ method: 'PUT', headers: headers({{'Content-Type':'application/json'}}), body: JSON.stringify(data) }});
@@ -680,7 +661,6 @@ async function saveConfig(e) {{
   fillForm(result.config || {{}}); msg('✓ Saved. ' + (result.updated?.length ? 'Updated: ' + result.updated.join(', ') : 'No changes.'));
 }}
 async function reloadConfig() {{
-  rememberToken();
   const r = await fetch('/config/reload', {{ method: 'POST', headers: headers() }});
   const result = await r.json().catch(() => ({{error: 'Invalid response'}}));
   if (!r.ok) {{ msg('✗ ' + (result.error || 'Reload failed'), 'err'); return; }}
@@ -688,9 +668,7 @@ async function reloadConfig() {{
 }}
 document.getElementById('load-btn').addEventListener('click', loadConfig);
 document.getElementById('reload-btn').addEventListener('click', reloadConfig);
-document.getElementById('clear-token-btn').addEventListener('click', () => {{ localStorage.removeItem('openhavoiceConfigToken'); document.getElementById('admin-token').value=''; msg('Token forgotten'); }});
 document.getElementById('config-form').addEventListener('submit', saveConfig);
-document.getElementById('admin-token').value = localStorage.getItem('openhavoiceConfigToken') || '';
 applyDefaultHints();
 loadConfig();
 </script>
