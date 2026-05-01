@@ -499,128 +499,200 @@ async def config_reload(request: web.Request) -> web.Response:
 
 
 async def config_ui(request: web.Request) -> web.Response:
-    """GET / — simple HTML form to view and edit config."""
-    html = """<!DOCTYPE html>
+    """GET / — compact Web UI for viewing and editing relay config."""
+    defaults_json = json.dumps(RelayConfig().to_dict(reveal=False), ensure_ascii=False)
+    html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OpenHAVoice Config</title>
 <style>
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { font: 14px/1.5 system-ui, sans-serif; background: #0d1117; color: #c9d1d9;
-         max-width: 700px; margin: 2rem auto; padding: 0 1rem; }
-  h1 { color: #58a6ff; margin-bottom: 1rem; }
-  section { margin-bottom: 2rem; }
-  h2 { color: #f0883e; font-size: 1rem; text-transform: uppercase;
-       letter-spacing: .05em; margin-bottom: .5rem; }
-  label { display: block; margin-bottom: .25rem; color: #8b949e; font-size: .85rem; }
-  input, textarea { width: 100%; padding: .5rem; background: #161b22; border: 1px solid #30363d;
-                    border-radius: 4px; color: #c9d1d9; font: inherit; margin-bottom: .75rem; }
-  textarea { resize: vertical; min-height: 3rem; }
-  button { background: #238636; color: #fff; border: none; padding: .5rem 1.5rem;
-           border-radius: 4px; cursor: pointer; font: inherit; }
-  button:hover { background: #2ea043; }
-  .secret input { -webkit-text-security: disc; }
-  .msg { padding: .5rem; border-radius: 4px; margin-bottom: 1rem; }
-  .msg.ok { background: #1a3a2a; color: #3fb950; }
-  .msg.err { background: #3a1a1a; color: #f85149; }
+  :root {{
+    --bg: #0d1117; --panel: #161b22; --panel2: #0f1722; --line: #30363d;
+    --text: #c9d1d9; --muted: #8b949e; --blue: #58a6ff; --orange: #f0883e;
+    --green: #3fb950; --red: #f85149; --red-bg: #3a1a1a; --green-bg: #12351f;
+  }}
+  * {{ box-sizing: border-box; }}
+  body {{ margin: 0; font: 14px/1.45 system-ui, -apple-system, Segoe UI, sans-serif; background: var(--bg); color: var(--text); }}
+  main {{ width: min(1180px, calc(100vw - 32px)); margin: 24px auto 56px; }}
+  header {{ display: flex; align-items: end; justify-content: space-between; gap: 16px; margin-bottom: 16px; }}
+  h1 {{ color: var(--blue); margin: 0; font-size: clamp(24px, 3vw, 34px); letter-spacing: -.02em; }}
+  .sub {{ color: var(--muted); margin-top: 4px; }}
+  .authbar {{ display: grid; grid-template-columns: 1fr auto auto; gap: 8px; align-items: center;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px; margin-bottom: 12px; }}
+  .authbar input {{ margin: 0; }}
+  .grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }}
+  .card {{ background: linear-gradient(180deg, var(--panel), var(--panel2)); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }}
+  .wide {{ grid-column: 1 / -1; }}
+  h2 {{ color: var(--orange); font-size: .85rem; text-transform: uppercase; letter-spacing: .08em; margin: 0 0 14px; }}
+  .fields {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }}
+  .field.full {{ grid-column: 1 / -1; }}
+  label {{ display: flex; justify-content: space-between; gap: 8px; color: var(--muted); font-size: .76rem; font-weight: 700; letter-spacing: .04em; margin-bottom: 5px; }}
+  .current {{ color: var(--blue); font-weight: 600; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-transform: none; letter-spacing: 0; }}
+  input, textarea {{ width: 100%; padding: 9px 10px; background: #0d1117; border: 1px solid var(--line); border-radius: 8px; color: var(--text); font: inherit; }}
+  input:focus, textarea:focus {{ outline: none; border-color: var(--blue); box-shadow: 0 0 0 2px #58a6ff33; }}
+  textarea {{ resize: vertical; min-height: 82px; }}
+  .hint {{ color: var(--muted); font-size: .76rem; margin-top: 4px; }}
+  .hint code {{ color: #d2a8ff; background: #111722; padding: 1px 4px; border-radius: 4px; }}
+  .actions {{ display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }}
+  button {{ background: #238636; color: #fff; border: 0; padding: 9px 14px; border-radius: 8px; cursor: pointer; font: inherit; font-weight: 700; }}
+  button.secondary {{ background: #21262d; color: var(--text); border: 1px solid var(--line); }}
+  button:hover {{ filter: brightness(1.1); }}
+  .msg {{ padding: 10px 12px; border-radius: 10px; margin-bottom: 12px; display: none; }}
+  .msg.ok {{ display: block; background: var(--green-bg); color: var(--green); }}
+  .msg.err {{ display: block; background: var(--red-bg); color: var(--red); }}
+  .readonly {{ opacity: .78; }}
+  @media (max-width: 860px) {{ .grid, .fields {{ grid-template-columns: 1fr; }} .authbar {{ grid-template-columns: 1fr; }} header {{ display: block; }} }}
 </style>
 </head>
 <body>
-<h1>OpenHAVoice Configuration</h1>
-<div id="msg"></div>
-<form id="config-form">
-  <section>
-    <h2>Voice PE</h2>
-    <label>VOICE_HOST</label><input name="VOICE_HOST" required>
-    <label class="secret">VOICE_PSK</label><input name="VOICE_PSK" type="password" required>
-    <label class="secret">VOICE_PASSWORD</label><input name="VOICE_PASSWORD" type="password">
-  </section>
-  <section>
-    <h2>STT (Whisper)</h2>
-    <label>WHISPER_URL</label><input name="WHISPER_URL">
-    <label>LANGUAGE</label><input name="LANGUAGE">
-  </section>
-  <section>
-    <h2>TTS (Orpheus)</h2>
-    <label>ORPHEUS_URL</label><input name="ORPHEUS_URL">
-    <label>ORPHEUS_MODEL</label><input name="ORPHEUS_MODEL">
-    <label>ORPHEUS_VOICE</label><input name="ORPHEUS_VOICE">
-    <label>TTS_HOST</label><input name="TTS_HOST">
-    <label>TTS_PORT</label><input name="TTS_PORT" type="number">
-    <label>TTS_POST_PLAYBACK_GRACE_SECONDS</label><input name="TTS_POST_PLAYBACK_GRACE_SECONDS" type="number" step="0.1">
-  </section>
-  <section>
-    <h2>OpenClaw Gateway</h2>
-    <label>OPENCLAW_URL</label><input name="OPENCLAW_URL">
-    <label class="secret">OPENCLAW_TOKEN</label><input name="OPENCLAW_TOKEN" type="password">
-    <label>OPENCLAW_SESSION_KEY</label><input name="OPENCLAW_SESSION_KEY">
-    <label>OPENCLAW_MODEL</label><input name="OPENCLAW_MODEL">
-    <label>OPENCLAW_MESSAGE_CHANNEL</label><input name="OPENCLAW_MESSAGE_CHANNEL">
-    <label>System Prompt</label><textarea name="OPENCLAW_VOICE_SYSTEM_PROMPT"></textarea>
-  </section>
-  <section>
-    <h2>VAD / Capture</h2>
-    <label>MIN_SPEECH_MS</label><input name="MIN_SPEECH_MS" type="number">
-    <label>END_SILENCE_MS</label><input name="END_SILENCE_MS" type="number">
-    <label>MAX_CAPTURE_SECONDS</label><input name="MAX_CAPTURE_SECONDS" type="number" step="0.1">
-    <label>VAD_AGGRESSIVENESS</label><input name="VAD_AGGRESSIVENESS" type="number" min="0" max="3">
-    <label>RMS_SILENCE_THRESHOLD</label><input name="RMS_SILENCE_THRESHOLD" type="number">
-    <label>RMS_END_SILENCE_MS</label><input name="RMS_END_SILENCE_MS" type="number">
-  </section>
-  <section>
-    <h2>Config API</h2>
-    <label class="secret">CONFIG_ADMIN_TOKEN</label><input name="CONFIG_ADMIN_TOKEN" type="password" placeholder="leave blank to keep existing">
-  </section>
-  <section>
-    <h2>Network / Reconnect</h2>
-    <label>RECONNECT_INITIAL_SECONDS</label><input name="RECONNECT_INITIAL_SECONDS" type="number" step="0.1">
-    <label>RECONNECT_MAX_SECONDS</label><input name="RECONNECT_MAX_SECONDS" type="number" step="0.1">
-  </section>
-  <button type="submit">Save Configuration</button>
-</form>
+<main>
+  <header>
+    <div>
+      <h1>OpenHAVoice Configuration</h1>
+      <div class="sub">Aktuelle Werte bearbeiten. Hinweise zeigen die Defaults; leere Secret-Felder behalten den aktuellen Wert.</div>
+    </div>
+  </header>
+
+  <div class="authbar">
+    <input id="admin-token" type="password" placeholder="CONFIG_ADMIN_TOKEN für LAN-Zugriff einfügen">
+    <button class="secondary" type="button" id="load-btn">Load current values</button>
+    <button class="secondary" type="button" id="clear-token-btn">Forget token</button>
+  </div>
+  <div id="msg" class="msg"></div>
+
+  <form id="config-form">
+    <div class="grid">
+      <section class="card">
+        <h2>Voice PE</h2>
+        <div class="fields">
+          <div class="field"><label>VOICE_HOST <span class="current" data-current="VOICE_HOST"></span></label><input name="VOICE_HOST" required></div>
+          <div class="field"><label>VOICE_PSK <span class="current" data-current="VOICE_PSK"></span></label><input name="VOICE_PSK" type="password" placeholder="leave blank to keep existing"><div class="hint">Default: leer · Secret bleibt serverseitig gespeichert.</div></div>
+          <div class="field"><label>VOICE_PASSWORD <span class="current" data-current="VOICE_PASSWORD"></span></label><input name="VOICE_PASSWORD" type="password" placeholder="leave blank to keep existing"><div class="hint">Default: leer</div></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Local Services</h2>
+        <div class="fields">
+          <div class="field full"><label>WHISPER_URL <span class="current" data-current="WHISPER_URL"></span></label><input name="WHISPER_URL"></div>
+          <div class="field"><label>LANGUAGE <span class="current" data-current="LANGUAGE"></span></label><input name="LANGUAGE"></div>
+          <div class="field"><label>ORPHEUS_VOICE <span class="current" data-current="ORPHEUS_VOICE"></span></label><input name="ORPHEUS_VOICE"></div>
+          <div class="field full"><label>ORPHEUS_URL <span class="current" data-current="ORPHEUS_URL"></span></label><input name="ORPHEUS_URL"></div>
+          <div class="field"><label>ORPHEUS_MODEL <span class="current" data-current="ORPHEUS_MODEL"></span></label><input name="ORPHEUS_MODEL"></div>
+          <div class="field"><label>TTS_POST_PLAYBACK_GRACE_SECONDS <span class="current" data-current="TTS_POST_PLAYBACK_GRACE_SECONDS"></span></label><input name="TTS_POST_PLAYBACK_GRACE_SECONDS" type="number" step="0.1"></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Relay Endpoint</h2>
+        <div class="fields">
+          <div class="field"><label>TTS_HOST <span class="current" data-current="TTS_HOST"></span></label><input name="TTS_HOST"></div>
+          <div class="field"><label>TTS_PORT <span class="current" data-current="TTS_PORT"></span></label><input name="TTS_PORT" type="number"></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>VAD / Capture</h2>
+        <div class="fields">
+          <div class="field"><label>MIN_SPEECH_MS <span class="current" data-current="MIN_SPEECH_MS"></span></label><input name="MIN_SPEECH_MS" type="number"></div>
+          <div class="field"><label>END_SILENCE_MS <span class="current" data-current="END_SILENCE_MS"></span></label><input name="END_SILENCE_MS" type="number"></div>
+          <div class="field"><label>MAX_CAPTURE_SECONDS <span class="current" data-current="MAX_CAPTURE_SECONDS"></span></label><input name="MAX_CAPTURE_SECONDS" type="number" step="0.1"></div>
+          <div class="field"><label>VAD_AGGRESSIVENESS <span class="current" data-current="VAD_AGGRESSIVENESS"></span></label><input name="VAD_AGGRESSIVENESS" type="number" min="0" max="3"><div class="hint">0 = locker, 3 = aggressiv</div></div>
+          <div class="field"><label>RMS_SILENCE_THRESHOLD <span class="current" data-current="RMS_SILENCE_THRESHOLD"></span></label><input name="RMS_SILENCE_THRESHOLD" type="number"></div>
+          <div class="field"><label>RMS_END_SILENCE_MS <span class="current" data-current="RMS_END_SILENCE_MS"></span></label><input name="RMS_END_SILENCE_MS" type="number"></div>
+        </div>
+      </section>
+
+      <section class="card wide">
+        <h2>OpenClaw Gateway</h2>
+        <div class="fields">
+          <div class="field"><label>OPENCLAW_URL <span class="current" data-current="OPENCLAW_URL"></span></label><input name="OPENCLAW_URL"></div>
+          <div class="field"><label>OPENCLAW_MODEL <span class="current" data-current="OPENCLAW_MODEL"></span></label><input name="OPENCLAW_MODEL"></div>
+          <div class="field"><label>OPENCLAW_SESSION_KEY <span class="current" data-current="OPENCLAW_SESSION_KEY"></span></label><input name="OPENCLAW_SESSION_KEY"><div class="hint">Default leer = <code>openhavoice:&lt;device-name&gt;</code></div></div>
+          <div class="field"><label>OPENCLAW_MESSAGE_CHANNEL <span class="current" data-current="OPENCLAW_MESSAGE_CHANNEL"></span></label><input name="OPENCLAW_MESSAGE_CHANNEL"></div>
+          <div class="field"><label>OPENCLAW_TOKEN <span class="current" data-current="OPENCLAW_TOKEN"></span></label><input name="OPENCLAW_TOKEN" type="password" placeholder="leave blank to keep existing"><div class="hint">Default: leer · Secret wird nie angezeigt.</div></div>
+          <div class="field"><label>CONFIG_ADMIN_TOKEN <span class="current" data-current="CONFIG_ADMIN_TOKEN"></span></label><input name="CONFIG_ADMIN_TOKEN" type="password" placeholder="leave blank to keep existing"><div class="hint">Default: leer = /config nur localhost.</div></div>
+          <div class="field full"><label>OPENCLAW_VOICE_SYSTEM_PROMPT <span class="current" data-current="OPENCLAW_VOICE_SYSTEM_PROMPT"></span></label><textarea name="OPENCLAW_VOICE_SYSTEM_PROMPT"></textarea></div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Reconnect</h2>
+        <div class="fields">
+          <div class="field"><label>RECONNECT_INITIAL_SECONDS <span class="current" data-current="RECONNECT_INITIAL_SECONDS"></span></label><input name="RECONNECT_INITIAL_SECONDS" type="number" step="0.1"></div>
+          <div class="field"><label>RECONNECT_MAX_SECONDS <span class="current" data-current="RECONNECT_MAX_SECONDS"></span></label><input name="RECONNECT_MAX_SECONDS" type="number" step="0.1"></div>
+        </div>
+      </section>
+    </div>
+    <div class="actions">
+      <button class="secondary" type="button" id="reload-btn">Reload from file</button>
+      <button type="submit">Save Configuration</button>
+    </div>
+  </form>
+</main>
 <script>
-function authHeaders(extra = {}) {
-  const token = localStorage.getItem('openhavoiceConfigToken') || prompt('Config admin token (blank for localhost-only access):') || '';
-  if (token) localStorage.setItem('openhavoiceConfigToken', token);
-  return token ? {...extra, 'Authorization': 'Bearer ' + token} : extra;
-}
-async function load() {
-  const r = await fetch('/config', { headers: authHeaders() });
-  const cfg = await r.json();
-  if (!r.ok) {
-    const msg = document.getElementById('msg');
-    msg.className = 'msg err';
-    msg.textContent = '✗ ' + (cfg.error || 'Config load failed');
-    return;
-  }
+const DEFAULTS = {defaults_json};
+const SECRET_FIELDS = new Set(['VOICE_PSK', 'VOICE_PASSWORD', 'OPENCLAW_TOKEN', 'CONFIG_ADMIN_TOKEN']);
+const fieldNames = Object.keys(DEFAULTS).map(k => k.toUpperCase());
+function msg(text, kind='ok') {{ const el = document.getElementById('msg'); el.className = 'msg ' + kind; el.textContent = text; }}
+function token() {{ return document.getElementById('admin-token').value || localStorage.getItem('openhavoiceConfigToken') || ''; }}
+function headers(extra={{}}) {{ const t = token(); return t ? {{...extra, 'Authorization': 'Bearer ' + t}} : extra; }}
+function rememberToken() {{ const t = document.getElementById('admin-token').value.trim(); if (t) localStorage.setItem('openhavoiceConfigToken', t); }}
+function applyDefaultHints() {{
+  for (const name of fieldNames) {{
+    const input = document.querySelector(`[name="${{name}}"]`);
+    if (!input) continue;
+    const key = name.toLowerCase();
+    const def = DEFAULTS[key];
+    if (!input.parentElement.querySelector('.hint')) {{
+      const h = document.createElement('div'); h.className = 'hint'; h.innerHTML = `Default: <code>${{def === '' ? 'leer' : String(def)}}</code>`; input.after(h);
+    }}
+  }}
+}}
+function fillForm(cfg) {{
   const form = document.getElementById('config-form');
-  for (const [key, val] of Object.entries(cfg)) {
-    const el = form.elements[key.toUpperCase()];
+  for (const [key, val] of Object.entries(cfg)) {{
+    const name = key.toUpperCase();
+    const el = form.elements[name];
+    const current = document.querySelector(`[data-current="${{name}}"]`);
+    const display = val === '****' ? 'configured' : (val === '' || val == null ? 'empty' : String(val));
+    if (current) current.textContent = display;
     if (el && val !== '****') el.value = val ?? '';
-  }
-}
-document.getElementById('config-form').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const form = e.target;
-  const data = {};
-  for (const el of form.elements) {
-    if (el.name) data[el.name] = el.value;
-  }
-  const r = await fetch('/config', { method: 'PUT',
-    headers: authHeaders({'Content-Type': 'application/json'}), body: JSON.stringify(data) });
-  const result = await r.json();
-  const msg = document.getElementById('msg');
-  if (r.ok) {
-    msg.className = 'msg ok';
-    msg.textContent = '✓ Saved. ' + (result.updated?.length ? 'Updated: ' + result.updated.join(', ') : 'No changes.');
-  } else {
-    msg.className = 'msg err';
-    msg.textContent = '✗ ' + (result.error || result.details?.join(', ') || 'Unknown error');
-  }
-});
-load();
+    if (el && val === '****') el.value = '';
+  }}
+}}
+async function loadConfig() {{
+  rememberToken(); applyDefaultHints();
+  const r = await fetch('/config', {{ headers: headers() }});
+  const data = await r.json().catch(() => ({{error: 'Invalid response'}}));
+  if (!r.ok) {{ msg('✗ ' + (data.details || data.error || 'Config load failed'), 'err'); return; }}
+  fillForm(data); msg('✓ Current values loaded');
+}}
+async function saveConfig(e) {{
+  e.preventDefault(); rememberToken();
+  const form = e.target; const data = {{}};
+  for (const el of form.elements) if (el.name) data[el.name] = el.value;
+  const r = await fetch('/config', {{ method: 'PUT', headers: headers({{'Content-Type':'application/json'}}), body: JSON.stringify(data) }});
+  const result = await r.json().catch(() => ({{error: 'Invalid response'}}));
+  if (!r.ok) {{ msg('✗ ' + (result.details?.join?.('; ') || result.details || result.error || 'Save failed'), 'err'); return; }}
+  fillForm(result.config || {{}}); msg('✓ Saved. ' + (result.updated?.length ? 'Updated: ' + result.updated.join(', ') : 'No changes.'));
+}}
+async function reloadConfig() {{
+  rememberToken();
+  const r = await fetch('/config/reload', {{ method: 'POST', headers: headers() }});
+  const result = await r.json().catch(() => ({{error: 'Invalid response'}}));
+  if (!r.ok) {{ msg('✗ ' + (result.error || 'Reload failed'), 'err'); return; }}
+  msg('✓ Reloaded from file'); await loadConfig();
+}}
+document.getElementById('load-btn').addEventListener('click', loadConfig);
+document.getElementById('reload-btn').addEventListener('click', reloadConfig);
+document.getElementById('clear-token-btn').addEventListener('click', () => {{ localStorage.removeItem('openhavoiceConfigToken'); document.getElementById('admin-token').value=''; msg('Token forgotten'); }});
+document.getElementById('config-form').addEventListener('submit', saveConfig);
+document.getElementById('admin-token').value = localStorage.getItem('openhavoiceConfigToken') || '';
+applyDefaultHints();
+loadConfig();
 </script>
 </body>
 </html>"""
