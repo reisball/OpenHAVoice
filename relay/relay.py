@@ -858,12 +858,10 @@ async def config_ui(request: web.Request) -> web.Response:
           <div class="field"><label>Noise PSK</label><input id="voice-device-psk" type="password" placeholder="leave blank to keep existing"></div>
           <div class="field"><label>Password</label><input id="voice-device-password" type="password" placeholder="optional / leave blank"></div>
           <div class="field full"><label>Status</label><span id="voice-device-status" class="current">—</span></div>
-          <div class="field"><label class="check-label"><input id="voice-device-enabled" type="checkbox"> Enabled</label><div class="hint">Connection changes need relay restart.</div></div>
-          <div class="field"><label class="check-label"><input id="voice-device-active" type="checkbox"> Default target</label><div class="hint">Saves this device into the low-level VOICE_HOST config.</div></div>
         </div>
         <div class="actions">
           <button class="secondary" type="button" id="voice-device-add">Add new device</button>
-          <button type="button" id="voice-device-save">Save device</button>
+          <button type="button" id="voice-device-save">Save</button>
         </div>
       </section>
 
@@ -1008,7 +1006,7 @@ function renderDevices() {{
   for (const d of voiceDevices) {{
     const opt = document.createElement('option');
     opt.value = d.host;
-    opt.textContent = `${{d.name || d.host}} (${{d.host}})${{d.active ? ' — default' : ''}}`;
+    opt.textContent = `${{d.name || d.host}} (${{d.host}})`;
     select.appendChild(opt);
   }}
   if (!voiceDevices.some(d => d.host === selectedDeviceHost)) selectedDeviceHost = voiceDevices[0].host;
@@ -1020,11 +1018,9 @@ function fillSelectedDevice(d) {{
   document.getElementById('voice-device-host').value = d?.host || '';
   document.getElementById('voice-device-psk').value = '';
   document.getElementById('voice-device-password').value = '';
-  document.getElementById('voice-device-enabled').checked = d ? !!d.enabled : true;
-  document.getElementById('voice-device-active').checked = d ? !!d.active : false;
   const [label, cls] = deviceStatusLabel(d);
   const status = document.getElementById('voice-device-status');
-  status.textContent = d ? `${{label}}${{d.active ? ' · Default target' : ''}} · PSK ${{d.psk ? 'configured' : 'missing'}} · Password ${{d.password ? 'configured' : 'empty'}}` : '—';
+  status.textContent = d ? `${{label}} · PSK ${{d.psk ? 'configured' : 'missing'}} · Password ${{d.password ? 'configured' : 'empty'}}` : '—';
   status.style.color = cls === 'on' ? 'var(--green)' : (cls === 'off' ? 'var(--red)' : '');
 }}
 function openDeviceDialog() {{
@@ -1058,8 +1054,6 @@ async function saveVoiceDevice() {{
     host,
     psk: document.getElementById('voice-device-psk').value,
     password: document.getElementById('voice-device-password').value,
-    enabled: document.getElementById('voice-device-enabled').checked,
-    activate: document.getElementById('voice-device-active').checked,
   }});
   if (result) msg('✓ Device saved' + (result.restart_required ? '. Restart relay to apply connection changes.' : ''));
 }}
