@@ -548,7 +548,7 @@ async def config_ui(request: web.Request) -> web.Response:
   .grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }}
   .card {{ background: linear-gradient(180deg, var(--panel), var(--panel2)); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }}
   .wide {{ grid-column: 1 / -1; }}
-  #device-card {{ margin-bottom: 14px; }}
+  #service-card, #device-card {{ margin-bottom: 14px; }}
   h2 {{ color: var(--orange); font-size: .85rem; text-transform: uppercase; letter-spacing: .08em; margin: 0 0 14px; }}
   .fields {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }}
   .field.full {{ grid-column: 1 / -1; }}
@@ -583,6 +583,15 @@ async def config_ui(request: web.Request) -> web.Response:
     </div>
   </header>
 
+  <!-- Service Status Dashboard -->
+  <div class="card wide" id="service-card">
+    <h2>OpenHAVoice Service</h2>
+    <div class="fields" style="grid-template-columns: repeat(3, 1fr);" id="service-overview">
+      <div class="field"><label>Service Start</label><span id="svc-start" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
+      <div class="field"><label>Uptime</label><span id="svc-uptime" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
+    </div>
+  </div>
+
   <!-- Device Overview Dashboard -->
   <div class="card wide" id="device-card">
     <h2>Device Status</h2>
@@ -590,11 +599,9 @@ async def config_ui(request: web.Request) -> web.Response:
       <div class="field"><label>Device</label><span id="dv-device" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
       <div class="field"><label>Status</label><span id="dv-status" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
       <div class="field"><label>Sessions</label><span id="dv-sessions" class="current" style="max-width:100%;font-size:1rem;">0</span></div>
-      <div class="field"><label>Service Start</label><span id="dv-service-start" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
-      <div class="field"><label>Uptime</label><span id="dv-uptime" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
-      <div class="field"><label>Last Stop</label><span id="dv-stop" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
       <div class="field"><label>Last Session</label><span id="dv-last" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
       <div class="field"><label>Duration</label><span id="dv-duration" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
+      <div class="field"><label>Last Stop</label><span id="dv-stop" class="current" style="max-width:100%;font-size:1rem;">—</span></div>
     </div>
   </div>
 
@@ -740,10 +747,10 @@ async function updateDeviceOverview() {{
     document.getElementById('dv-status').textContent = s.connected ? 'Connected' : 'Disconnected';
     document.getElementById('dv-status').style.color = s.connected ? 'var(--green)' : 'var(--red)';
     document.getElementById('dv-sessions').textContent = s.total_sessions || 0;
-    document.getElementById('dv-service-start').textContent = s.service_started_at
+    document.getElementById('svc-start').textContent = s.service_started_at
       ? new Date(s.service_started_at * 1000).toLocaleTimeString()
       : '—';
-    document.getElementById('dv-uptime').textContent = formatDuration(s.service_uptime_sec);
+    document.getElementById('svc-uptime').textContent = formatDuration(s.service_uptime_sec);
     document.getElementById('dv-last').textContent = s.last_session_at
       ? new Date(s.last_session_at * 1000).toLocaleTimeString()
       : '—';
