@@ -1,6 +1,6 @@
 name: Publish release to GitHub
 
-on:
+"on":
   release:
     types: [published]
 
@@ -54,19 +54,19 @@ jobs:
           fi
 
           python3 - <<'PY' > /tmp/github-release-payload.json
-import json
-import os
+          import json
+          import os
 
-tag = os.environ["GITHUB_REF"].removeprefix("refs/tags/")
-print(json.dumps({
-    "tag_name": tag,
-    "target_commitish": "main",
-    "name": tag,
-    "draft": False,
-    "prerelease": False,
-    "generate_release_notes": True,
-}))
-PY
+          tag = os.environ["GITHUB_REF"].removeprefix("refs/tags/")
+          print(json.dumps({
+              "tag_name": tag,
+              "target_commitish": "main",
+              "name": tag,
+              "draft": False,
+              "prerelease": False,
+              "generate_release_notes": True,
+          }))
+          PY
 
           curl -fsS -X POST \
             -H "Authorization: Bearer ${GH_TOKEN}" \
