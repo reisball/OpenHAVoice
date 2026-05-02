@@ -80,6 +80,31 @@ The process stays connected as the active Voice PE backend and reconnects automa
 
 Then press the Voice PE button and speak.
 
+## Configuration keys
+
+`python -m relay.cli generate` writes a template that follows the `RelayConfig` schema. The same keys can be edited through the Web UI.
+
+| Key | Purpose |
+| --- | --- |
+| `VOICE_HOST` | Single Voice PE host/IP fallback when `VOICE_DEVICES` is empty. |
+| `VOICE_PSK` | Noise PSK for the single Voice PE fallback. Secret. |
+| `VOICE_PASSWORD` | Optional ESPHome API password for the single-device fallback. Secret. |
+| `VOICE_DEVICES` | Optional JSON list of devices: `name`, `host`, `psk`, `password`, `enabled`. Secret. |
+| `WHISPER_URL` / `LANGUAGE` | Whisper-compatible STT endpoint and language hint. |
+| `ORPHEUS_URL` / `ORPHEUS_MODEL` / `ORPHEUS_VOICE` | TTS endpoint, model, and voice. |
+| `TTS_HOST` / `TTS_PORT` | HTTP bind address for the UI and WAV playback URLs. |
+| `TTS_POST_PLAYBACK_GRACE_SECONDS` | Grace period before ending the Voice PE assist run after TTS URL handoff. |
+| `OPENCLAW_URL` / `OPENCLAW_TOKEN` | OpenClaw gateway/chat endpoint and optional bearer token. |
+| `OPENCLAW_AGENT` | OpenClaw agent name; sent to Chat Completions as `openclaw/<agent>`. |
+| `OPENCLAW_SESSION_KEY` | Optional fixed session key; empty derives `openhavoice:<device-name>`. |
+| `OPENCLAW_MESSAGE_CHANNEL` | Message channel header sent to OpenClaw, usually `voice`. |
+| `OPENCLAW_VOICE_SYSTEM_PROMPT` | Voice-specific system prompt for concise spoken replies. |
+| `MIN_SPEECH_MS` / `END_SILENCE_MS` / `MAX_CAPTURE_SECONDS` | Core capture/VAD timing. |
+| `VAD_AGGRESSIVENESS` | WebRTC VAD aggressiveness, 0-3. |
+| `RMS_SILENCE_THRESHOLD` / `RMS_END_SILENCE_MS` | Loudness-based silence guard. |
+| `CONFIG_ADMIN_TOKEN` | Optional config API bearer token. Secret. |
+| `RECONNECT_INITIAL_SECONDS` / `RECONNECT_MAX_SECONDS` | Voice PE reconnect backoff range. |
+
 ## Home Assistant interaction
 
 For direct tests, disable the HA ESPHome integration entry for the test Voice PE. Do not delete the device and do not flash firmware.

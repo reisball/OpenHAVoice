@@ -117,6 +117,40 @@ python relay.py
 
 The relay is intended to stay running as the active backend client. If the Voice PE reboots or drops the TCP connection, the relay reconnects automatically with backoff.
 
+## Configuration reference
+
+The relay loads configuration from `~/.config/openhavoice/relay.env` by default, with `relay/.env` kept as a legacy/dev fallback. `python -m relay.cli generate` emits the same keys as the `RelayConfig` schema.
+
+| Key | Purpose | Default |
+| --- | --- | --- |
+| `VOICE_HOST` | Single Voice PE host/IP fallback when `VOICE_DEVICES` is empty. | empty |
+| `VOICE_PSK` | Noise PSK for the single Voice PE fallback. Secret. | empty |
+| `VOICE_PASSWORD` | Optional ESPHome API password for the single-device fallback. Secret. | empty |
+| `VOICE_DEVICES` | Optional JSON list of devices: `name`, `host`, `psk`, `password`, `enabled`. Secret. | `[]` |
+| `WHISPER_URL` | Whisper-compatible STT endpoint. | local CT URL |
+| `LANGUAGE` | STT language hint. | `de` |
+| `ORPHEUS_URL` | Orpheus/OpenAI-compatible TTS endpoint. | local CT URL |
+| `ORPHEUS_MODEL` | TTS model/deployment name. | `orpheus-german-fix-ctx4k` |
+| `ORPHEUS_VOICE` | TTS voice. | `jana` |
+| `TTS_HOST` | HTTP bind host for generated WAV playback URLs. | `0.0.0.0` |
+| `TTS_PORT` | HTTP port for the config UI and generated WAV playback URLs. | `8765` |
+| `TTS_POST_PLAYBACK_GRACE_SECONDS` | Short grace period before ending the Voice PE assist run after TTS URL handoff. | `1.0` |
+| `OPENCLAW_URL` | OpenClaw Chat Completions endpoint or gateway base URL. | `http://127.0.0.1:18789` |
+| `OPENCLAW_TOKEN` | Optional OpenClaw bearer token. Secret. | empty |
+| `OPENCLAW_AGENT` | OpenClaw agent name; stored as a name, sent as `openclaw/<agent>`. | `default` |
+| `OPENCLAW_SESSION_KEY` | Optional fixed session key; empty derives `openhavoice:<device-name>`. | empty |
+| `OPENCLAW_MESSAGE_CHANNEL` | Message channel header sent to OpenClaw. | `voice` |
+| `OPENCLAW_VOICE_SYSTEM_PROMPT` | Voice-specific system prompt for concise spoken replies. | short German voice prompt |
+| `MIN_SPEECH_MS` | Minimum detected speech before accepting a turn. | `900` |
+| `END_SILENCE_MS` | WebRTC VAD silence needed to end input. | `900` |
+| `MAX_CAPTURE_SECONDS` | Maximum capture length before timeout. | `15.0` |
+| `VAD_AGGRESSIVENESS` | WebRTC VAD aggressiveness, 0-3. | `2` |
+| `RMS_SILENCE_THRESHOLD` | RMS threshold for loudness-based silence guard. | `500` |
+| `RMS_END_SILENCE_MS` | Loudness-based silence duration needed to end input. | `1200` |
+| `CONFIG_ADMIN_TOKEN` | Optional config API bearer token. Secret. | empty |
+| `RECONNECT_INITIAL_SECONDS` | Initial reconnect backoff for Voice PE connections. | `1.0` |
+| `RECONNECT_MAX_SECONDS` | Maximum reconnect backoff. | `30.0` |
+
 ## systemd service
 
 A user service template lives in [`systemd/`](systemd/):

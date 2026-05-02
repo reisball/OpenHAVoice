@@ -60,7 +60,7 @@ def cmd_generate(config: RelayConfig, args: argparse.Namespace) -> None:
     target = Path(args.output) if getattr(args, "output", None) else Path(".env.example")
 
     sections: list[tuple[str, list[str]]] = [
-        ("Voice PE", ["voice_host", "voice_psk", "voice_password"]),
+        ("Voice PE", ["voice_host", "voice_psk", "voice_password", "voice_devices"]),
         ("STT (Whisper)", ["whisper_url", "language"]),
         ("TTS (Orpheus)", ["orpheus_url", "orpheus_model", "orpheus_voice",
                            "tts_host", "tts_port", "tts_post_playback_grace_seconds"]),
