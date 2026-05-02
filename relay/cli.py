@@ -15,7 +15,9 @@ import json
 import sys
 from pathlib import Path
 
-from .config import RelayConfig, fields
+from dataclasses import fields
+
+from .config import RelayConfig
 
 
 def cmd_show(config: RelayConfig, args: argparse.Namespace) -> None:
@@ -55,38 +57,37 @@ def cmd_validate(config: RelayConfig, args: argparse.Namespace) -> None:
         print("✓ Configuration is valid.")
 
 
+def _field_type_name(type_value: object) -> str:
+    if hasattr(type_value, "__name__"):
+        return type_value.__name__  # type: ignore[no-any-return]
+    return str(type_value).strip("'\"")
+
+
 def cmd_generate(config: RelayConfig, args: argparse.Namespace) -> None:
-    """Generate a .env.example with comments."""
+    """Generate a .env.example from RelayConfig field metadata."""
     target = Path(args.output) if getattr(args, "output", None) else Path(".env.example")
 
-    sections: list[tuple[str, list[str]]] = [
-        ("Voice PE", ["voice_host", "voice_psk", "voice_password", "voice_devices"]),
-        ("STT (Whisper)", ["whisper_url", "language"]),
-        ("TTS (Orpheus)", ["orpheus_url", "orpheus_model", "orpheus_voice",
-                           "tts_host", "tts_port", "tts_post_playback_grace_seconds"]),
-        ("OpenClaw Gateway", ["openclaw_url", "openclaw_token", "openclaw_session_key",
-                              "openclaw_agent", "openclaw_message_channel",
-                              "openclaw_voice_system_prompt"]),
-        ("VAD / Capture", ["min_speech_ms", "end_silence_ms", "max_capture_seconds",
-                           "vad_aggressiveness", "rms_silence_threshold",
-                           "rms_end_silence_ms"]),
-        ("Network / Reconnect", ["reconnect_initial_seconds", "reconnect_max_seconds"]),
-    ]
-
-    field_map = {fld.name: fld for fld in fields(RelayConfig)}
     lines: list[str] = []
+    current_section: str | None = None
 
-    for section, field_names in sections:
-        lines.append(f"# ── {section} {'─' * (60 - len(section))}")
-        for name in field_names:
-            fld = field_map[name]
-            env_key = name.upper()
-            default = getattr(config, name)
-            lines.append(f"# {fld.type.__name__ if hasattr(fld.type, '__name__') else str(fld.type)}")
-            lines.append(f"{env_key}={default}")
-            lines.append("")
+    for fld in fields(RelayConfig):
+        section = str(fld.metadata.get("section", "General"))
+        if section != current_section:
+            if lines:
+                lines.append("")
+            lines.append(f"# ── {section} {'─' * max(0, 60 - len(section))}")
+            current_section = section
 
-    target.write_text("\n".join(lines), encoding="utf-8")
+        description = str(fld.metadata.get("description", "")).strip()
+        if description:
+            lines.append(f"# {description}")
+        lines.append(f"# type: {_field_type_name(fld.type)}")
+        env_key = fld.name.upper()
+        default = getattr(config, fld.name)
+        lines.append(f"{env_key}={default}")
+        lines.append("")
+
+    target.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
     print(f"✓ Generated {target}")
 
 

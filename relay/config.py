@@ -7,7 +7,7 @@ the RelayConfig dataclass. Secret values are redacted in non-reveal exports.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any
 
@@ -37,49 +37,55 @@ def default_env_path() -> Path:
     return DEFAULT_ENV_PATH
 
 
+def config_field(default: Any, section: str, description: str):
+    """Create a RelayConfig field with generator metadata."""
+    return field(default=default, metadata={"section": section, "description": description})
+
+
 @dataclass
 class RelayConfig:
     # ── Voice PE ──────────────────────────────────────────────
-    voice_host: str = ""
-    voice_psk: str = ""  # secret
-    voice_password: str = ""  # secret
-    voice_devices: str = ""  # secret JSON list: [{name, host, psk, password}]
+    voice_host: str = config_field("", "Voice PE", "Single Voice PE host/IP fallback when VOICE_DEVICES is empty.")
+    voice_psk: str = config_field("", "Voice PE", "Noise PSK for the single Voice PE fallback. Secret.")
+    voice_password: str = config_field("", "Voice PE", "Optional ESPHome API password for the single-device fallback. Secret.")
+    voice_devices: str = config_field("", "Voice PE", "Optional JSON list of devices: name, host, psk, password, enabled. Secret.")
 
     # ── STT (Whisper) ─────────────────────────────────────────
-    whisper_url: str = "http://192.168.50.51:8000/v1/audio/transcriptions"
-    language: str = "de"
+    whisper_url: str = config_field("http://192.168.50.51:8000/v1/audio/transcriptions", "STT (Whisper)", "Whisper-compatible STT endpoint.")
+    language: str = config_field("de", "STT (Whisper)", "STT language hint.")
 
     # ── TTS (Orpheus) ─────────────────────────────────────────
-    orpheus_url: str = "http://192.168.50.52:5005/v1/audio/speech"
-    orpheus_model: str = "orpheus-german-fix-ctx4k"
-    orpheus_voice: str = "jana"
-    tts_host: str = "0.0.0.0"
-    tts_port: int = 8765
-    tts_post_playback_grace_seconds: float = 1.0
+    orpheus_url: str = config_field("http://192.168.50.52:5005/v1/audio/speech", "TTS (Orpheus)", "Orpheus/OpenAI-compatible TTS endpoint.")
+    orpheus_model: str = config_field("orpheus-german-fix-ctx4k", "TTS (Orpheus)", "TTS model/deployment name.")
+    orpheus_voice: str = config_field("jana", "TTS (Orpheus)", "TTS voice.")
+    tts_host: str = config_field("0.0.0.0", "TTS (Orpheus)", "HTTP bind host for generated WAV playback URLs and Web UI.")
+    tts_port: int = config_field(8765, "TTS (Orpheus)", "HTTP port for generated WAV playback URLs and Web UI.")
+    tts_post_playback_grace_seconds: float = config_field(1.0, "TTS (Orpheus)", "Short grace period before ending the Voice PE assist run after TTS URL handoff.")
 
     # ── OpenClaw Gateway ──────────────────────────────────────
-    openclaw_url: str = "http://127.0.0.1:18789"
-    openclaw_token: str = ""  # secret
-    openclaw_session_key: str = ""
-    openclaw_agent: str = "default"
-    openclaw_message_channel: str = "voice"
-    openclaw_voice_system_prompt: str = (
+    openclaw_url: str = config_field("http://127.0.0.1:18789", "OpenClaw Gateway", "OpenClaw Chat Completions endpoint or gateway base URL.")
+    openclaw_token: str = config_field("", "OpenClaw Gateway", "Optional OpenClaw bearer token. Secret.")
+    openclaw_session_key: str = config_field("", "OpenClaw Gateway", "Optional fixed session key; empty derives openhavoice:<device-name>.")
+    openclaw_agent: str = config_field("default", "OpenClaw Gateway", "OpenClaw agent name; stored as a name and sent as openclaw/<agent>.")
+    openclaw_message_channel: str = config_field("voice", "OpenClaw Gateway", "Message channel header sent to OpenClaw.")
+    openclaw_voice_system_prompt: str = config_field(
         "Du antwortest über einen Voice Assistant. Antworte kurz, natürlich "
-        "und ohne Markdown, Listen oder Emojis. Ein bis zwei Sätze reichen."
+        "und ohne Markdown, Listen oder Emojis. Ein bis zwei Sätze reichen.",
+        "OpenClaw Gateway",
+        "Voice-specific system prompt for concise spoken replies.",
     )
 
     # ── VAD / Capture ─────────────────────────────────────────
-    min_speech_ms: int = 900
-    end_silence_ms: int = 900
-    max_capture_seconds: float = 15.0
-    vad_aggressiveness: int = 2
-    rms_silence_threshold: int = 500
-    rms_end_silence_ms: int = 1200
-
+    min_speech_ms: int = config_field(900, "VAD / Capture", "Minimum detected speech before accepting a turn.")
+    end_silence_ms: int = config_field(900, "VAD / Capture", "WebRTC VAD silence needed to end input.")
+    max_capture_seconds: float = config_field(15.0, "VAD / Capture", "Maximum capture length before timeout.")
+    vad_aggressiveness: int = config_field(2, "VAD / Capture", "WebRTC VAD aggressiveness, 0-3.")
+    rms_silence_threshold: int = config_field(500, "VAD / Capture", "RMS threshold for loudness-based silence guard.")
+    rms_end_silence_ms: int = config_field(1200, "VAD / Capture", "Loudness-based silence duration needed to end input.")
 
     # ── Network / Reconnect ───────────────────────────────────
-    reconnect_initial_seconds: float = 1.0
-    reconnect_max_seconds: float = 30.0
+    reconnect_initial_seconds: float = config_field(1.0, "Network / Reconnect", "Initial reconnect backoff for Voice PE connections.")
+    reconnect_max_seconds: float = config_field(30.0, "Network / Reconnect", "Maximum reconnect backoff.")
 
     # ── Methods ───────────────────────────────────────────────
 
