@@ -943,15 +943,6 @@ async def config_ui(request: web.Request) -> web.Response:
         </div>
       </section>
 
-      <section class="card">
-        <h2>Active Low Level Config</h2>
-        <div class="fields">
-          <div class="field"><label>VOICE_HOST <span class="current" data-current="VOICE_HOST"></span></label><input name="VOICE_HOST" required></div>
-          <div class="field"><label>VOICE_PSK <span class="current" data-current="VOICE_PSK"></span></label><input name="VOICE_PSK" type="password" placeholder="leave blank to keep existing"><div class="hint">Default: leer · Secret bleibt serverseitig gespeichert.</div></div>
-          <div class="field"><label>VOICE_PASSWORD <span class="current" data-current="VOICE_PASSWORD"></span></label><input name="VOICE_PASSWORD" type="password" placeholder="leave blank to keep existing"><div class="hint">Default: leer</div></div>
-        </div>
-      </section>
-
 
       <section class="card">
         <h2>Local Services</h2>
