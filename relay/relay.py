@@ -61,6 +61,7 @@ STATS: dict[str, object] = {
 }
 DEVICE_STATS: dict[str, dict[str, object]] = {}
 CURRENT_DEVICE_HOST: str | None = None
+CONNECTION_TASKS: list[asyncio.Task] = []
 
 
 def _new_device_stats(name: str | None = None) -> dict[str, object]:
@@ -317,6 +318,7 @@ async def devices_put(request: web.Request) -> web.Response:
     except json.JSONDecodeError:
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
+    old_connection_signature = _connection_signature()
     action = str(body.get("action", "save")).strip().lower()
     host = str(body.get("host", "")).strip()
     original_host = str(body.get("original_host", "")).strip() or host
@@ -336,7 +338,8 @@ async def devices_put(request: web.Request) -> web.Response:
             CFG.voice_psk = replacement.get("psk", "") if replacement else ""
             CFG.voice_password = replacement.get("password", "") if replacement else ""
         _save_voice_devices(devices)
-        return web.json_response({"ok": True, "active_host": CFG.voice_host, "devices": _load_voice_devices(reveal=False), "restart_required": True})
+        await restart_connection_tasks()
+        return web.json_response({"ok": True, "active_host": CFG.voice_host, "devices": _load_voice_devices(reveal=False), "connection_restarted": True})
 
     if existing is None:
         psk = str(body.get("psk", "")).strip()
@@ -379,11 +382,16 @@ async def devices_put(request: web.Request) -> web.Response:
     for device in redacted:
         device.update(DEVICE_STATUS.get(device["host"], {}))
         device["active"] = device["host"] == CFG.voice_host
+    restart_required = old_connection_signature != _connection_signature()
+    restarted_devices: list[dict[str, str]] = []
+    if restart_required:
+        restarted_devices = await restart_connection_tasks()
     return web.json_response({
         "ok": True,
         "active_host": CFG.voice_host,
         "devices": redacted,
-        "restart_required": activate or action in {"delete"},
+        "connection_restarted": restart_required,
+        "active_connections": [device["host"] for device in restarted_devices],
     })
 
 async def restart_handler(request: web.Request) -> web.Response:
@@ -722,6 +730,59 @@ def _enabled_connection_devices() -> list[dict[str, str]]:
     return devices
 
 
+def _connection_signature(devices: list[dict[str, str]] | None = None) -> tuple[tuple[str, str, str, str, bool], ...]:
+    """Return the connection-affecting device config in a comparable form."""
+    selected = devices if devices is not None else _enabled_connection_devices()
+    return tuple(
+        (
+            str(device.get("name", "")),
+            str(device.get("host", "")),
+            str(device.get("psk", "")),
+            str(device.get("password", "")),
+            bool(device.get("enabled", True)),
+        )
+        for device in selected
+    )
+
+
+def _mark_all_devices_restarting() -> None:
+    for status in DEVICE_STATUS.values():
+        status.update({"online": False, "connected": False, "status": "restarting"})
+    for stats in DEVICE_STATS.values():
+        stats["connected"] = False
+    STATS["connected"] = False
+
+
+async def stop_connection_tasks() -> None:
+    """Cancel all active Voice PE connection loops."""
+    global CONNECTION_TASKS
+    if not CONNECTION_TASKS:
+        return
+    for task in CONNECTION_TASKS:
+        task.cancel()
+    await asyncio.gather(*CONNECTION_TASKS, return_exceptions=True)
+    CONNECTION_TASKS = []
+
+
+async def start_connection_tasks() -> list[dict[str, str]]:
+    """Start connection loops for the currently enabled Voice PE devices."""
+    global CONNECTION_TASKS, LOCAL_IP
+    devices = _enabled_connection_devices()
+    if not devices:
+        CONNECTION_TASKS = []
+        return []
+    LOCAL_IP = local_ip_for(devices[0]["host"])
+    CONNECTION_TASKS = [asyncio.create_task(connection_loop(device)) for device in devices]
+    return devices
+
+
+async def restart_connection_tasks() -> list[dict[str, str]]:
+    """Apply changed Voice PE connection config without a manual service restart."""
+    _mark_all_devices_restarting()
+    await stop_connection_tasks()
+    return await start_connection_tasks()
+
+
 async def main() -> None:
     global LOCAL_IP, CFG
     CFG = load_config()
@@ -740,13 +801,11 @@ async def main() -> None:
     LOCAL_IP = local_ip_for(devices[0]["host"])
 
     runner = await start_http_server()
-    tasks = [asyncio.create_task(connection_loop(device)) for device in devices]
+    await start_connection_tasks()
     try:
-        await asyncio.gather(*tasks)
+        await asyncio.Future()
     finally:
-        for task in tasks:
-            task.cancel()
-        await asyncio.gather(*tasks, return_exceptions=True)
+        await stop_connection_tasks()
         await runner.cleanup()
 
 
@@ -788,6 +847,7 @@ async def config_put(request: web.Request) -> web.Response:
     except json.JSONDecodeError:
         return web.json_response({"error": "Invalid JSON"}, status=400)
 
+    old_connection_signature = _connection_signature()
     candidate = copy.deepcopy(CFG)
     updated: list[str] = []
     errors: list[str] = []
@@ -813,10 +873,17 @@ async def config_put(request: web.Request) -> web.Response:
     candidate.save()
     CFG = candidate
     VAD.set_mode(CFG.vad_aggressiveness)
+    restart_required = old_connection_signature != _connection_signature()
+    restarted_devices: list[dict[str, str]] = []
+    if restart_required:
+        restarted_devices = await restart_connection_tasks()
     return web.json_response({
         "ok": True,
         "updated": updated,
         "config": CFG.to_dict(reveal=False),
+        "connection_restarted": restart_required,
+        "devices": _load_voice_devices(reveal=False),
+        "active_connections": [device["host"] for device in restarted_devices],
     })
 
 
@@ -836,12 +903,19 @@ async def config_reload(request: web.Request) -> web.Response:
         return denied
     try:
         global CFG
+        old_connection_signature = _connection_signature()
         CFG = load_config()
         VAD.set_mode(CFG.vad_aggressiveness)
         errors = CFG.validate()
+        restart_required = not errors and old_connection_signature != _connection_signature()
+        restarted_devices: list[dict[str, str]] = []
+        if restart_required:
+            restarted_devices = await restart_connection_tasks()
         return web.json_response({
             "ok": True,
-            "message": "Config reloaded. Note: connection restart requires manual restart.",
+            "message": "Config reloaded." + (" Voice PE connections restarted." if restart_required else ""),
+            "connection_restarted": restart_required,
+            "active_connections": [device["host"] for device in restarted_devices],
             "validation_errors": errors,
         })
     except Exception as exc:
@@ -1077,13 +1151,13 @@ async function saveConfig(e) {{
   const r = await fetch('/config', {{ method: 'PUT', headers: headers({{'Content-Type':'application/json'}}), body: JSON.stringify(data) }});
   const result = await r.json().catch(() => ({{error: 'Invalid response'}}));
   if (!r.ok) {{ msg('✗ ' + (result.details?.join?.('; ') || result.details || result.error || 'Save failed'), 'err'); return; }}
-  fillForm(result.config || {{}}); msg('✓ Saved. ' + (result.updated?.length ? 'Updated: ' + result.updated.join(', ') : 'No changes.'));
+  fillForm(result.config || {{}}); msg('✓ Saved. ' + (result.updated?.length ? 'Updated: ' + result.updated.join(', ') : 'No changes.') + (result.connection_restarted ? ' Voice PE connections restarted.' : ''));
 }}
 async function reloadConfig() {{
   const r = await fetch('/config/reload', {{ method: 'POST', headers: headers() }});
   const result = await r.json().catch(() => ({{error: 'Invalid response'}}));
   if (!r.ok) {{ msg('✗ ' + (result.error || 'Reload failed'), 'err'); return; }}
-  msg('✓ Reloaded from file'); await loadConfig();
+  msg('✓ Reloaded from file' + (result.connection_restarted ? '. Voice PE connections restarted.' : '')); await loadConfig();
 }}
 let voiceDevices = [];
 let selectedDeviceHost = '';
@@ -1154,7 +1228,7 @@ async function saveVoiceDevice() {{
     psk: document.getElementById('voice-device-psk').value,
     password: document.getElementById('voice-device-password').value,
   }});
-  if (result) msg('✓ Device saved' + (result.restart_required ? '. Restart relay to apply connection changes.' : ''));
+  if (result) msg('✓ Device saved' + (result.connection_restarted ? '. Voice PE connections restarted.' : ''));
 }}
 async function restartRelay() {{
   const r = await fetch('/api/restart', {{ method: 'POST', headers: headers() }});

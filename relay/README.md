@@ -76,7 +76,7 @@ When the relay is running, open `http://<host>:8765/` for the configuration dash
 - `POST /config/validate` — Validate without saving
 - `POST /config/reload` — Reload from .env file
 
-The process stays connected as the active Voice PE backend and reconnects automatically if the device reboots or the TCP connection drops.
+The process stays connected as the active Voice PE backend and reconnects automatically if the device reboots or the TCP connection drops. Config saves or reloads that change Voice PE connection details automatically restart the in-process device connection loops; the manual restart button is only a fallback for full service restarts.
 
 Then press the Voice PE button and speak.
 
