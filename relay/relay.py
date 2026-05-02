@@ -848,6 +848,8 @@ async def config_ui(request: web.Request) -> web.Response:
   .grid {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }}
   .card {{ background: linear-gradient(180deg, var(--panel), var(--panel2)); border: 1px solid var(--line); border-radius: 14px; padding: 16px; }}
   .wide {{ grid-column: 1 / -1; }}
+  .config-space-title {{ grid-column: 1 / -1; border-top: 1px solid var(--line); padding-top: 18px; margin-top: 10px; color: var(--blue); font-size: 1rem; font-weight: 800; letter-spacing: .02em; }}
+  .config-space-title:first-child {{ border-top: 0; margin-top: 0; padding-top: 0; }}
   #service-card, #device-card {{ margin-bottom: 14px; }}
   h2 {{ color: var(--orange); font-size: .85rem; text-transform: uppercase; letter-spacing: .08em; margin: 0 0 14px; }}
   .fields {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }}
@@ -927,8 +929,9 @@ async def config_ui(request: web.Request) -> web.Response:
 
   <form id="config-form">
     <div class="grid">
+      <div class="config-space-title">Voice PE Devices</div>
       <section class="card">
-        <h2>Voice PE Devices</h2>
+        <h2>Device Connection</h2>
         <div class="fields">
           <div class="field full"><label>Device</label><select id="voice-device-select"></select></div>
           <div class="field"><label>Device Name</label><input id="voice-device-name" placeholder="home-assistant-voice-…"></div>
@@ -943,9 +946,29 @@ async def config_ui(request: web.Request) -> web.Response:
         </div>
       </section>
 
+      <section class="card">
+        <h2>VAD / Capture</h2>
+        <div class="fields">
+          <div class="field"><label>MIN_SPEECH_MS <span class="current" data-current="MIN_SPEECH_MS"></span></label><input name="MIN_SPEECH_MS" type="number"></div>
+          <div class="field"><label>END_SILENCE_MS <span class="current" data-current="END_SILENCE_MS"></span></label><input name="END_SILENCE_MS" type="number"></div>
+          <div class="field"><label>MAX_CAPTURE_SECONDS <span class="current" data-current="MAX_CAPTURE_SECONDS"></span></label><input name="MAX_CAPTURE_SECONDS" type="number" step="0.1"></div>
+          <div class="field"><label>VAD_AGGRESSIVENESS <span class="current" data-current="VAD_AGGRESSIVENESS"></span></label><input name="VAD_AGGRESSIVENESS" type="number" min="0" max="3"><div class="hint">0 = locker, 3 = aggressiv</div></div>
+          <div class="field"><label>RMS_SILENCE_THRESHOLD <span class="current" data-current="RMS_SILENCE_THRESHOLD"></span></label><input name="RMS_SILENCE_THRESHOLD" type="number"></div>
+          <div class="field"><label>RMS_END_SILENCE_MS <span class="current" data-current="RMS_END_SILENCE_MS"></span></label><input name="RMS_END_SILENCE_MS" type="number"></div>
+        </div>
+      </section>
 
       <section class="card">
-        <h2>Local Services</h2>
+        <h2>Reconnect</h2>
+        <div class="fields">
+          <div class="field"><label>RECONNECT_INITIAL_SECONDS <span class="current" data-current="RECONNECT_INITIAL_SECONDS"></span></label><input name="RECONNECT_INITIAL_SECONDS" type="number" step="0.1"></div>
+          <div class="field"><label>RECONNECT_MAX_SECONDS <span class="current" data-current="RECONNECT_MAX_SECONDS"></span></label><input name="RECONNECT_MAX_SECONDS" type="number" step="0.1"></div>
+        </div>
+      </section>
+
+      <div class="config-space-title">Local Services</div>
+      <section class="card">
+        <h2>STT / TTS Services</h2>
         <div class="fields">
           <div class="field full"><label>WHISPER_URL <span class="current" data-current="WHISPER_URL"></span></label><input name="WHISPER_URL"></div>
           <div class="field full"><label>LANGUAGE <span class="current" data-current="LANGUAGE"></span></label><input name="LANGUAGE"></div>
@@ -965,18 +988,7 @@ async def config_ui(request: web.Request) -> web.Response:
         </div>
       </section>
 
-      <section class="card">
-        <h2>VAD / Capture</h2>
-        <div class="fields">
-          <div class="field"><label>MIN_SPEECH_MS <span class="current" data-current="MIN_SPEECH_MS"></span></label><input name="MIN_SPEECH_MS" type="number"></div>
-          <div class="field"><label>END_SILENCE_MS <span class="current" data-current="END_SILENCE_MS"></span></label><input name="END_SILENCE_MS" type="number"></div>
-          <div class="field"><label>MAX_CAPTURE_SECONDS <span class="current" data-current="MAX_CAPTURE_SECONDS"></span></label><input name="MAX_CAPTURE_SECONDS" type="number" step="0.1"></div>
-          <div class="field"><label>VAD_AGGRESSIVENESS <span class="current" data-current="VAD_AGGRESSIVENESS"></span></label><input name="VAD_AGGRESSIVENESS" type="number" min="0" max="3"><div class="hint">0 = locker, 3 = aggressiv</div></div>
-          <div class="field"><label>RMS_SILENCE_THRESHOLD <span class="current" data-current="RMS_SILENCE_THRESHOLD"></span></label><input name="RMS_SILENCE_THRESHOLD" type="number"></div>
-          <div class="field"><label>RMS_END_SILENCE_MS <span class="current" data-current="RMS_END_SILENCE_MS"></span></label><input name="RMS_END_SILENCE_MS" type="number"></div>
-        </div>
-      </section>
-
+      <div class="config-space-title">OpenClaw Config</div>
       <section class="card wide">
         <h2>OpenClaw Gateway</h2>
         <div class="fields">
@@ -987,14 +999,6 @@ async def config_ui(request: web.Request) -> web.Response:
           <div class="field"><label>OPENCLAW_TOKEN <span class="current" data-current="OPENCLAW_TOKEN"></span></label><input name="OPENCLAW_TOKEN" type="password" placeholder="leave blank to keep existing"><div class="hint">Default: leer · Secret wird nie angezeigt.</div></div>
           <div class="field"><label>CONFIG_ADMIN_TOKEN <span class="current" data-current="CONFIG_ADMIN_TOKEN"></span></label><input name="CONFIG_ADMIN_TOKEN" type="password" placeholder="leave blank to keep existing"><div class="hint">Default: leer = /config nur localhost.</div></div>
           <div class="field full"><label>OPENCLAW_VOICE_SYSTEM_PROMPT <span class="current" data-current="OPENCLAW_VOICE_SYSTEM_PROMPT"></span></label><textarea name="OPENCLAW_VOICE_SYSTEM_PROMPT"></textarea></div>
-        </div>
-      </section>
-
-      <section class="card">
-        <h2>Reconnect</h2>
-        <div class="fields">
-          <div class="field"><label>RECONNECT_INITIAL_SECONDS <span class="current" data-current="RECONNECT_INITIAL_SECONDS"></span></label><input name="RECONNECT_INITIAL_SECONDS" type="number" step="0.1"></div>
-          <div class="field"><label>RECONNECT_MAX_SECONDS <span class="current" data-current="RECONNECT_MAX_SECONDS"></span></label><input name="RECONNECT_MAX_SECONDS" type="number" step="0.1"></div>
         </div>
       </section>
     </div>
