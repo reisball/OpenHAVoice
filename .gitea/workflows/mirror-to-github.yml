@@ -1,0 +1,26 @@
+name: Mirror release tag to GitHub
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Push main and tag to GitHub
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF#refs/tags/}"
+          git fetch origin main --tags
+          git remote add github "https://x-access-token:${GH_TOKEN}@github.com/reisball/OpenHAVoice.git"
+          git push github refs/remotes/origin/main:refs/heads/main
+          git push github "refs/tags/${tag}:refs/tags/${tag}"
