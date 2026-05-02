@@ -71,10 +71,12 @@ def _new_device_stats(name: str | None = None) -> dict[str, object]:
         "last_session_duration_sec": None,
         "last_in_at": None,
         "last_in_duration_sec": None,
+        "last_in_turn_duration_sec": None,
         "last_out_at": None,
         "last_out_duration_sec": None,
         "last_out_turn_duration_sec": None,
         "last_turn_duration_sec": None,
+        "turn_history": [],
         "device_name": name,
         "connected": False,
     }
@@ -95,6 +97,18 @@ def _set_stat(key: str, value: object, host: str | None = None) -> None:
     stats = _device_stats(host)
     if stats is not None:
         stats[key] = value
+
+
+def _record_turn_history(duration_sec: float, host: str | None = None) -> None:
+    entry = {"timestamp": time.time(), "duration_sec": round(duration_sec, 1)}
+    history = list(STATS.get("turn_history") or [])
+    history.append(entry)
+    STATS["turn_history"] = history[-10:]
+    stats = _device_stats(host)
+    if stats is not None:
+        device_history = list(stats.get("turn_history") or [])
+        device_history.append(entry)
+        stats["turn_history"] = device_history[-10:]
 
 VAD = webrtcvad.Vad(2)
 FRAME_MS = 30
@@ -461,9 +475,12 @@ async def finish(reason: str, abort: bool = False) -> None:
 
     loop = asyncio.get_running_loop()
     try:
+        stt_started_at = time.time()
         text = await loop.run_in_executor(None, transcribe, wav_path)
-        _set_stat("last_in_at", time.time())
+        stt_finished_at = time.time()
+        _set_stat("last_in_at", stt_finished_at)
         _set_stat("last_in_duration_sec", round(input_duration, 1) if input_duration is not None else None)
+        _set_stat("last_in_turn_duration_sec", round(stt_finished_at - stt_started_at, 1))
         print(f"TRANSCRIPT {text!r}", flush=True)
         CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_STT_END, {"text": text})
         CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_INTENT_START, None)
@@ -481,7 +498,9 @@ async def finish(reason: str, abort: bool = False) -> None:
         print(f"ROUNDTRIP_FAILED {exc!r}", flush=True)
     finally:
         if STARTED_AT is not None:
-            _set_stat("last_turn_duration_sec", round(time.time() - STARTED_AT, 1))
+            total_turn_duration = round(time.time() - STARTED_AT, 1)
+            _set_stat("last_turn_duration_sec", total_turn_duration)
+            _record_turn_history(total_turn_duration)
         try:
             CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_RUN_END, None)
         except Exception:
@@ -862,6 +881,10 @@ async def config_ui(request: web.Request) -> web.Response:
   .device-status-section:first-child {{ border-top: 0; padding-top: 0; }}
   .device-status-fields {{ display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }}
   .device-status-fields .current {{ max-width: 100%; font-size: 1rem; }}
+  .mini-table {{ width: 100%; border-collapse: collapse; margin-top: 2px; color: var(--text); }}
+  .mini-table th, .mini-table td {{ border-top: 1px solid var(--line); padding: 7px 0; text-align: left; }}
+  .mini-table th {{ color: var(--muted); font-size: .76rem; font-weight: 700; letter-spacing: .04em; }}
+  .mini-table td:last-child, .mini-table th:last-child {{ text-align: right; color: var(--blue); }}
   .device-row {{ border: 1px solid var(--line); border-radius: 12px; padding: 12px; background: #0d1117; display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: center; }}
   .device-title {{ font-weight: 800; color: var(--text); }}
   .device-meta {{ color: var(--muted); font-size: .82rem; margin-top: 3px; }}
@@ -1141,6 +1164,15 @@ function formatTime(ts) {{
 function formatSeconds(value) {{
   return value != null ? Number(value).toFixed(1) + 's' : '—';
 }}
+function renderTurnHistory(history) {{
+  if (!history || !history.length) return '<div class="hint">No completed turns yet.</div>';
+  const rows = history.slice().reverse().map((turn) => `
+    <tr>
+      <td>${{formatDateTime(turn.timestamp)}}</td>
+      <td>${{formatSeconds(turn.duration_sec)}}</td>
+    </tr>`).join('');
+  return `<table class="mini-table"><thead><tr><th>Date / Time</th><th>Total Turn Duration</th></tr></thead><tbody>${{rows}}</tbody></table>`;
+}}
 function renderDeviceStatus(devices) {{
   const root = document.getElementById('device-overview');
   if (!devices || !devices.length) {{
@@ -1157,15 +1189,19 @@ function renderDeviceStatus(devices) {{
       ${{deviceField('Sessions', d.total_sessions || 0)}}
       ${{deviceField('Last Stop', d.last_stop_reason || '—')}}
       <div class="field spacer" aria-hidden="true"></div>
-      <div style="grid-column:1/-1;border-top:1px solid var(--border);padding:4px 0;font-weight:600;color:var(--text);">Last In — Voice</div>
+      <div style="grid-column:1/-1;border-top:1px solid var(--border);padding:4px 0;font-weight:600;color:var(--text);">Last In — STT</div>
       ${{deviceField('Timestamp', formatTime(d.last_in_at))}}
       ${{deviceField('Message Length', formatSeconds(d.last_in_duration_sec))}}
-      ${{deviceField('Turn Duration', formatSeconds(d.last_turn_duration_sec))}}
+      ${{deviceField('Turn Duration', formatSeconds(d.last_in_turn_duration_sec))}}
       <div class="field spacer" aria-hidden="true"></div>
       <div style="grid-column:1/-1;border-top:1px solid var(--border);padding:4px 0;font-weight:600;color:var(--text);">Last Out — TTS</div>
       ${{deviceField('Timestamp', formatTime(d.last_out_at))}}
       ${{deviceField('Message Length', formatSeconds(d.last_out_duration_sec))}}
       ${{deviceField('Turn Duration', formatSeconds(d.last_out_turn_duration_sec))}}
+      <div class="field spacer" aria-hidden="true"></div>
+      <div style="grid-column:1/-1;border-top:1px solid var(--border);padding:4px 0;font-weight:600;color:var(--text);">Total Turn Duration</div>
+      ${{deviceField('Last Total', formatSeconds(d.last_turn_duration_sec))}}
+      <div style="grid-column:1/-1">${{renderTurnHistory(d.turn_history)}}</div>
     </div></div>`;
   }}).join('');
 }}
