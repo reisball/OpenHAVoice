@@ -102,8 +102,9 @@ Then press the Voice PE button and speak.
 | `MIN_SPEECH_MS` / `END_SILENCE_MS` / `MAX_CAPTURE_SECONDS` | Core capture/VAD timing. |
 | `VAD_AGGRESSIVENESS` | WebRTC VAD aggressiveness, 0-3. |
 | `RMS_SILENCE_THRESHOLD` / `RMS_END_SILENCE_MS` | Loudness-based silence guard. |
-| `CONFIG_ADMIN_TOKEN` | Optional config API bearer token. Secret. |
 | `RECONNECT_INITIAL_SECONDS` / `RECONNECT_MAX_SECONDS` | Voice PE reconnect backoff range. |
+
+The config Web UI/API intentionally has no built-in `CONFIG_ADMIN_TOKEN`; protect exposure through bind address, firewall, or reverse-proxy controls.
 
 ## Home Assistant interaction
 

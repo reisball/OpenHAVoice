@@ -147,9 +147,10 @@ The relay loads configuration from `~/.config/openhavoice/relay.env` by default,
 | `VAD_AGGRESSIVENESS` | WebRTC VAD aggressiveness, 0-3. | `2` |
 | `RMS_SILENCE_THRESHOLD` | RMS threshold for loudness-based silence guard. | `500` |
 | `RMS_END_SILENCE_MS` | Loudness-based silence duration needed to end input. | `1200` |
-| `CONFIG_ADMIN_TOKEN` | Optional config API bearer token. Secret. | empty |
 | `RECONNECT_INITIAL_SECONDS` | Initial reconnect backoff for Voice PE connections. | `1.0` |
 | `RECONNECT_MAX_SECONDS` | Maximum reconnect backoff. | `30.0` |
+
+The config Web UI/API intentionally has no built-in `CONFIG_ADMIN_TOKEN`. Keep the relay bound or firewalled appropriately when exposing it.
 
 ## systemd service
 

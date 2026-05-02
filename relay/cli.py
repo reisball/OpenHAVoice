@@ -70,7 +70,6 @@ def cmd_generate(config: RelayConfig, args: argparse.Namespace) -> None:
         ("VAD / Capture", ["min_speech_ms", "end_silence_ms", "max_capture_seconds",
                            "vad_aggressiveness", "rms_silence_threshold",
                            "rms_end_silence_ms"]),
-        ("Config API", ["config_admin_token"]),
         ("Network / Reconnect", ["reconnect_initial_seconds", "reconnect_max_seconds"]),
     ]
 

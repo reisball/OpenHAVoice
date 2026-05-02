@@ -14,7 +14,7 @@ from typing import Any
 LEGACY_ENV_PATH = Path(__file__).with_name(".env")
 DEFAULT_ENV_PATH = Path("~/.config/openhavoice/relay.env").expanduser()
 
-SECRET_KEYS = {"VOICE_PASSWORD", "VOICE_PSK", "VOICE_DEVICES", "OPENCLAW_TOKEN", "CONFIG_ADMIN_TOKEN"}
+SECRET_KEYS = {"VOICE_PASSWORD", "VOICE_PSK", "VOICE_DEVICES", "OPENCLAW_TOKEN"}
 LEGACY_ENV_ALIASES = {
     "OPENCLAW_MODEL": "OPENCLAW_AGENT",
 }
@@ -76,8 +76,6 @@ class RelayConfig:
     rms_silence_threshold: int = 500
     rms_end_silence_ms: int = 1200
 
-    # ── Web config API ────────────────────────────────────────
-    config_admin_token: str = ""  # secret; if empty, config API is localhost-only
 
     # ── Network / Reconnect ───────────────────────────────────
     reconnect_initial_seconds: float = 1.0

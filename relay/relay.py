@@ -295,9 +295,6 @@ def _save_voice_devices(devices: list[dict[str, str]]) -> None:
 
 
 async def devices_get(request: web.Request) -> web.Response:
-    denied = _require_config_auth(request)
-    if denied is not None:
-        return denied
     devices = _load_voice_devices(reveal=False)
     for device in devices:
         device.update(DEVICE_STATUS.get(device["host"], {}))
@@ -310,9 +307,6 @@ async def devices_get(request: web.Request) -> web.Response:
 
 async def devices_put(request: web.Request) -> web.Response:
     global CFG, LOCAL_IP
-    denied = _require_config_auth(request)
-    if denied is not None:
-        return denied
     try:
         body = await request.json()
     except json.JSONDecodeError:
@@ -395,9 +389,6 @@ async def devices_put(request: web.Request) -> web.Response:
     })
 
 async def restart_handler(request: web.Request) -> web.Response:
-    denied = _require_config_auth(request)
-    if denied is not None:
-        return denied
 
     async def delayed_restart() -> None:
         await asyncio.sleep(0.5)
@@ -811,37 +802,15 @@ async def main() -> None:
 
 # ── Config Web UI handlers ───────────────────────────────────
 
-def _config_request_allowed(_request: web.Request) -> bool:
-    """Always allow config API access."""
-    return True
-
-
-def _require_config_auth(request: web.Request) -> web.Response | None:
-    if _config_request_allowed(request):
-        return None
-    return web.json_response(
-        {
-            "error": "Config API is protected",
-            "details": "Config API is open (no admin token configured).",
-        },
-        status=403,
-    )
-
 
 async def config_get(request: web.Request) -> web.Response:
     """GET /config — return current config as JSON, always redacting secrets."""
-    denied = _require_config_auth(request)
-    if denied is not None:
-        return denied
     return web.json_response(CFG.to_dict(reveal=False))
 
 
 async def config_put(request: web.Request) -> web.Response:
     """PUT /config — update one or more config fields."""
     global CFG
-    denied = _require_config_auth(request)
-    if denied is not None:
-        return denied
     try:
         body = await request.json()
     except json.JSONDecodeError:
@@ -851,7 +820,7 @@ async def config_put(request: web.Request) -> web.Response:
     candidate = copy.deepcopy(CFG)
     updated: list[str] = []
     errors: list[str] = []
-    secret_fields = {"VOICE_PSK", "VOICE_PASSWORD", "VOICE_DEVICES", "OPENCLAW_TOKEN", "CONFIG_ADMIN_TOKEN"}
+    secret_fields = {"VOICE_PSK", "VOICE_PASSWORD", "VOICE_DEVICES", "OPENCLAW_TOKEN"}
     for key, value in body.items():
         key_upper = str(key).upper()
         # Browser password fields are empty/redacted placeholders unless explicitly changed.
@@ -889,18 +858,12 @@ async def config_put(request: web.Request) -> web.Response:
 
 async def config_validate(request: web.Request) -> web.Response:
     """POST /config/validate — validate current config without saving."""
-    denied = _require_config_auth(request)
-    if denied is not None:
-        return denied
     errors = CFG.validate()
     return web.json_response({"valid": len(errors) == 0, "errors": errors})
 
 
 async def config_reload(request: web.Request) -> web.Response:
     """POST /config/reload — reload config from env file."""
-    denied = _require_config_auth(request)
-    if denied is not None:
-        return denied
     try:
         global CFG
         old_connection_signature = _connection_signature()
@@ -1097,7 +1060,6 @@ async def config_ui(request: web.Request) -> web.Response:
           <div class="field"><label>OPENCLAW_SESSION_KEY <span class="current" data-current="OPENCLAW_SESSION_KEY"></span></label><input name="OPENCLAW_SESSION_KEY"><div class="hint">Default leer = <code>openhavoice:&lt;device-name&gt;</code></div></div>
           <div class="field"><label>OPENCLAW_MESSAGE_CHANNEL <span class="current" data-current="OPENCLAW_MESSAGE_CHANNEL"></span></label><input name="OPENCLAW_MESSAGE_CHANNEL"></div>
           <div class="field"><label>OPENCLAW_TOKEN <span class="current" data-current="OPENCLAW_TOKEN"></span></label><input name="OPENCLAW_TOKEN" type="password" placeholder="leave blank to keep existing"><div class="hint">Default: leer · Secret wird nie angezeigt.</div></div>
-          <div class="field"><label>CONFIG_ADMIN_TOKEN <span class="current" data-current="CONFIG_ADMIN_TOKEN"></span></label><input name="CONFIG_ADMIN_TOKEN" type="password" placeholder="leave blank to keep existing"><div class="hint">Default: leer = /config nur localhost.</div></div>
           <div class="field full"><label>OPENCLAW_VOICE_SYSTEM_PROMPT <span class="current" data-current="OPENCLAW_VOICE_SYSTEM_PROMPT"></span></label><textarea name="OPENCLAW_VOICE_SYSTEM_PROMPT"></textarea></div>
         </div>
       </section>
@@ -1110,7 +1072,7 @@ async def config_ui(request: web.Request) -> web.Response:
 </main>
 <script>
 const DEFAULTS = {defaults_json};
-const SECRET_FIELDS = new Set(['VOICE_PSK', 'VOICE_PASSWORD', 'VOICE_DEVICES', 'OPENCLAW_TOKEN', 'CONFIG_ADMIN_TOKEN']);
+const SECRET_FIELDS = new Set(['VOICE_PSK', 'VOICE_PASSWORD', 'VOICE_DEVICES', 'OPENCLAW_TOKEN']);
 const fieldNames = Object.keys(DEFAULTS).map(k => k.toUpperCase());
 function msg(text, kind='ok') {{ const el = document.getElementById('msg'); el.className = 'msg ' + kind; el.textContent = text; }}
 function headers(extra={{}}) {{ return extra; }}
