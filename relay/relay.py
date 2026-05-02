@@ -73,6 +73,7 @@ def _new_device_stats(name: str | None = None) -> dict[str, object]:
         "last_in_duration_sec": None,
         "last_out_at": None,
         "last_out_duration_sec": None,
+        "last_out_turn_duration_sec": None,
         "last_turn_duration_sec": None,
         "device_name": name,
         "connected": False,
@@ -399,6 +400,7 @@ async def start_http_server() -> web.AppRunner:
 
 async def speak(text: str) -> None:
     assert CLIENT is not None
+    tts_turn_start = time.time()
     loop = asyncio.get_running_loop()
     audio = await loop.run_in_executor(None, synthesize, text)
     token = uuid.uuid4().hex
@@ -411,6 +413,7 @@ async def speak(text: str) -> None:
     last_tts_timestamp = time.time()
     _set_stat("last_tts_timestamp", last_tts_timestamp)
     _set_stat("last_out_at", last_tts_timestamp)
+    _set_stat("last_out_turn_duration_sec", round(last_tts_timestamp - tts_turn_start, 1))
     out_duration = wav_duration_seconds(audio)
     _set_stat("last_out_duration_sec", round(out_duration, 1) if out_duration is not None else None)
 
@@ -1152,15 +1155,17 @@ function renderDeviceStatus(devices) {{
       ${{deviceField('Device', d.device_name || d.name || d.host || '—')}}
       ${{deviceField('Status', status, color)}}
       ${{deviceField('Sessions', d.total_sessions || 0)}}
-      ${{deviceField('Last In', formatTime(d.last_in_at))}}
-      ${{deviceField('Duration', formatSeconds(d.last_in_duration_sec))}}
-      <div class="field spacer" aria-hidden="true"></div>
-      ${{deviceField('Last Out', formatTime(d.last_out_at))}}
-      ${{deviceField('Duration', formatSeconds(d.last_out_duration_sec))}}
-      <div class="field spacer" aria-hidden="true"></div>
-      ${{deviceField('Turn Duration', formatSeconds(d.last_turn_duration_sec))}}
       ${{deviceField('Last Stop', d.last_stop_reason || '—')}}
       <div class="field spacer" aria-hidden="true"></div>
+      <div style="grid-column:1/-1;border-top:1px solid var(--border);padding:4px 0;font-weight:600;color:var(--text);">Last In — Voice</div>
+      ${{deviceField('Timestamp', formatTime(d.last_in_at))}}
+      ${{deviceField('Message Length', formatSeconds(d.last_in_duration_sec))}}
+      ${{deviceField('Turn Duration', formatSeconds(d.last_turn_duration_sec))}}
+      <div class="field spacer" aria-hidden="true"></div>
+      <div style="grid-column:1/-1;border-top:1px solid var(--border);padding:4px 0;font-weight:600;color:var(--text);">Last Out — TTS</div>
+      ${{deviceField('Timestamp', formatTime(d.last_out_at))}}
+      ${{deviceField('Message Length', formatSeconds(d.last_out_duration_sec))}}
+      ${{deviceField('Turn Duration', formatSeconds(d.last_out_turn_duration_sec))}}
     </div></div>`;
   }}).join('');
 }}
