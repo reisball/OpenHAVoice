@@ -2,7 +2,7 @@
 
 OpenHAVoice should run as a persistent backend client for the Voice PE. If no backend client is connected, stock Voice PE firmware enters the red/not-ready state.
 
-This directory contains a user-systemd unit for running the relay on Denkstube.
+This directory contains a user-systemd unit for running the relay on the OpenHAVoice host.
 
 ## Install
 

@@ -92,7 +92,7 @@ VOICE_PSK=base64-noise-psk-from-esphome-config
 
 WHISPER_URL=http://192.168.50.51:8000/v1/audio/transcriptions
 ORPHEUS_URL=http://192.168.50.52:5005/v1/audio/speech
-ORPHEUS_MODEL=orpheus-german-fix
+ORPHEUS_MODEL=orpheus-german-fix-ctx4k
 ORPHEUS_VOICE=jana
 
 OPENCLAW_URL=http://127.0.0.1:18789

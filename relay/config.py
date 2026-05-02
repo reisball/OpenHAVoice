@@ -48,7 +48,7 @@ class RelayConfig:
 
     # ── TTS (Orpheus) ─────────────────────────────────────────
     orpheus_url: str = "http://192.168.50.52:5005/v1/audio/speech"
-    orpheus_model: str = "orpheus-german-fix"
+    orpheus_model: str = "orpheus-german-fix-ctx4k"
     orpheus_voice: str = "jana"
     tts_host: str = "0.0.0.0"
     tts_port: int = 8765
