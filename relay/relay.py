@@ -72,6 +72,7 @@ def _new_device_stats(name: str | None = None) -> dict[str, object]:
         "last_in_at": None,
         "last_in_duration_sec": None,
         "last_in_turn_duration_sec": None,
+        "last_openclaw_turn_duration_sec": None,
         "last_out_at": None,
         "last_out_duration_sec": None,
         "last_out_turn_duration_sec": None,
@@ -412,7 +413,7 @@ async def start_http_server() -> web.AppRunner:
     return runner
 
 
-async def speak(text: str) -> None:
+async def speak(text: str) -> float:
     assert CLIENT is not None
     tts_turn_start = time.time()
     loop = asyncio.get_running_loop()
@@ -427,9 +428,11 @@ async def speak(text: str) -> None:
     last_tts_timestamp = time.time()
     _set_stat("last_tts_timestamp", last_tts_timestamp)
     _set_stat("last_out_at", last_tts_timestamp)
-    _set_stat("last_out_turn_duration_sec", round(last_tts_timestamp - tts_turn_start, 1))
+    tts_turn_duration = last_tts_timestamp - tts_turn_start
+    _set_stat("last_out_turn_duration_sec", round(tts_turn_duration, 1))
     out_duration = wav_duration_seconds(audio)
     _set_stat("last_out_duration_sec", round(out_duration, 1) if out_duration is not None else None)
+    return tts_turn_duration
 
 
 async def finish(reason: str, abort: bool = False) -> None:
@@ -474,23 +477,31 @@ async def finish(reason: str, abort: bool = False) -> None:
     print(f"WAV {wav_path}", flush=True)
 
     loop = asyncio.get_running_loop()
+    stt_turn_duration: float | None = None
+    openclaw_turn_duration: float | None = None
+    tts_turn_duration: float | None = None
     try:
         stt_started_at = time.time()
         text = await loop.run_in_executor(None, transcribe, wav_path)
         stt_finished_at = time.time()
+        stt_turn_duration = stt_finished_at - stt_started_at
         _set_stat("last_in_at", stt_finished_at)
         _set_stat("last_in_duration_sec", round(input_duration, 1) if input_duration is not None else None)
-        _set_stat("last_in_turn_duration_sec", round(stt_finished_at - stt_started_at, 1))
+        _set_stat("last_in_turn_duration_sec", round(stt_turn_duration, 1))
         print(f"TRANSCRIPT {text!r}", flush=True)
         CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_STT_END, {"text": text})
         CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_INTENT_START, None)
         CLIENT.send_voice_assistant_event(E.VOICE_ASSISTANT_INTENT_END, None)
         _set_stat("last_stt_text", text)
 
+        openclaw_started_at = time.time()
         response_text = await loop.run_in_executor(None, openclaw_chat, text)
+        openclaw_finished_at = time.time()
+        openclaw_turn_duration = openclaw_finished_at - openclaw_started_at
+        _set_stat("last_openclaw_turn_duration_sec", round(openclaw_turn_duration, 1))
         _set_stat("last_llm_text", response_text)
         print(f"OPENCLAW_REPLY {response_text!r}", flush=True)
-        await speak(response_text)
+        tts_turn_duration = await speak(response_text)
         post_tts_grace_seconds = CFG.tts_post_playback_grace_seconds
         if post_tts_grace_seconds > 0:
             await asyncio.sleep(post_tts_grace_seconds)
@@ -498,7 +509,11 @@ async def finish(reason: str, abort: bool = False) -> None:
         print(f"ROUNDTRIP_FAILED {exc!r}", flush=True)
     finally:
         if STARTED_AT is not None:
-            total_turn_duration = round(time.time() - STARTED_AT, 1)
+            component_durations = [input_duration, stt_turn_duration, openclaw_turn_duration, tts_turn_duration]
+            if all(value is not None for value in component_durations):
+                total_turn_duration = round(sum(round(float(value), 1) for value in component_durations if value is not None), 1)
+            else:
+                total_turn_duration = round(time.time() - STARTED_AT, 1)
             _set_stat("last_turn_duration_sec", total_turn_duration)
             _record_turn_history(total_turn_duration)
         try:
@@ -1193,6 +1208,10 @@ function renderDeviceStatus(devices) {{
       ${{deviceField('Timestamp', formatTime(d.last_out_at))}}
       ${{deviceField('Message Length', formatSeconds(d.last_out_duration_sec))}}
       ${{deviceField('Turn Duration', formatSeconds(d.last_out_turn_duration_sec))}}
+      <div class="field spacer" aria-hidden="true"></div>
+      <div style="grid-column:1/-1;border-top:1px solid var(--border);padding:4px 0;font-weight:600;color:var(--text);">OpenClaw Turn Duration</div>
+      ${{deviceField('Turn Duration', formatSeconds(d.last_openclaw_turn_duration_sec))}}
+      <div class="field spacer" aria-hidden="true"></div>
       <div class="field spacer" aria-hidden="true"></div>
       <div style="grid-column:1/-1;border-top:1px solid var(--border);padding:4px 0;font-weight:600;color:var(--text);">Total Turn Duration</div>
       ${{deviceField('Last Total', formatSeconds(d.last_turn_duration_sec))}}
