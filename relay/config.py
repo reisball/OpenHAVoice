@@ -61,7 +61,7 @@ class RelayConfig:
     openclaw_model: str = "openclaw/default"
     openclaw_message_channel: str = "voice"
     openclaw_voice_system_prompt: str = (
-        "Du antwortest als Zoe über einen Voice Assistant. Antworte kurz, natürlich "
+        "Du antwortest über einen Voice Assistant. Antworte kurz, natürlich "
         "und ohne Markdown, Listen oder Emojis. Ein bis zwei Sätze reichen."
     )
 
