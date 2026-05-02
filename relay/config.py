@@ -15,6 +15,9 @@ LEGACY_ENV_PATH = Path(__file__).with_name(".env")
 DEFAULT_ENV_PATH = Path("~/.config/openhavoice/relay.env").expanduser()
 
 SECRET_KEYS = {"VOICE_PASSWORD", "VOICE_PSK", "VOICE_DEVICES", "OPENCLAW_TOKEN", "CONFIG_ADMIN_TOKEN"}
+LEGACY_ENV_ALIASES = {
+    "OPENCLAW_MODEL": "OPENCLAW_AGENT",
+}
 
 
 def default_env_path() -> Path:
@@ -58,7 +61,7 @@ class RelayConfig:
     openclaw_url: str = "http://127.0.0.1:18789"
     openclaw_token: str = ""  # secret
     openclaw_session_key: str = ""
-    openclaw_model: str = "openclaw/default"
+    openclaw_agent: str = "default"
     openclaw_message_channel: str = "voice"
     openclaw_voice_system_prompt: str = (
         "Du antwortest über einen Voice Assistant. Antworte kurz, natürlich "
@@ -90,8 +93,15 @@ class RelayConfig:
         for fld in fields(cls):
             env_key = _field_to_env(fld.name)
             raw = os.environ.get(env_key, env.get(env_key, ""))
+            if not raw.strip() and env_key == "OPENCLAW_AGENT":
+                # Backward compatibility for configs written before the UI field
+                # was renamed from model to agent.
+                raw = os.environ.get("OPENCLAW_MODEL", env.get("OPENCLAW_MODEL", ""))
             if raw.strip():
-                values[fld.name] = _coerce(raw, fld.type)
+                value = _coerce(raw, fld.type)
+                if fld.name == "openclaw_agent":
+                    value = _normalize_openclaw_agent_value(str(value))
+                values[fld.name] = value
         return cls(**values)
 
     def save(self, path: Path | None = None) -> None:
@@ -110,9 +120,11 @@ class RelayConfig:
                 new_lines.append(line)
                 continue
             key = stripped.split("=", 1)[0].strip()
-            env_key = key.upper()
+            env_key = LEGACY_ENV_ALIASES.get(key.upper(), key.upper())
             field_name = _env_to_field(env_key)
             if field_name and hasattr(self, field_name):
+                if env_key in written_keys:
+                    continue
                 value = getattr(self, field_name)
                 new_lines.append(f"{env_key}={value}")
                 written_keys.add(env_key)
@@ -178,11 +190,15 @@ class RelayConfig:
 
     def update(self, key: str, value: str) -> None:
         """Set a single field by its env key or field name."""
-        field_name = _env_to_field(key.upper()) or key.lower()
+        env_key = LEGACY_ENV_ALIASES.get(key.upper(), key.upper())
+        field_name = _env_to_field(env_key) or key.lower()
         if not hasattr(self, field_name):
             raise KeyError(f"Unknown config key: {key}")
         fld_type = type(getattr(self, field_name))
-        setattr(self, field_name, _coerce(value, fld_type))
+        coerced = _coerce(value, fld_type)
+        if field_name == "openclaw_agent":
+            coerced = _normalize_openclaw_agent_value(str(coerced))
+        setattr(self, field_name, coerced)
 
     def env_for_field(self, field_name: str) -> str:
         """Return the configured value for a field, accepting env-key or field-name."""
@@ -191,6 +207,19 @@ class RelayConfig:
 
 
 # ── Helpers ───────────────────────────────────────────────────
+
+def _normalize_openclaw_agent_value(value: str) -> str:
+    """Store only the agent name, while accepting legacy OpenClaw model targets."""
+    raw = (value or "default").strip() or "default"
+    lowered = raw.lower()
+    if lowered == "openclaw":
+        return "default"
+    for prefix in ("openclaw/", "openclaw:", "agent:"):
+        if lowered.startswith(prefix):
+            suffix = raw[len(prefix):].strip()
+            return suffix or "default"
+    return raw
+
 
 def _field_to_env(name: str) -> str:
     """Convert snake_case field name to UPPER_CASE env var."""

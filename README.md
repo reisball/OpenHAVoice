@@ -97,7 +97,8 @@ ORPHEUS_VOICE=jana
 
 OPENCLAW_URL=http://127.0.0.1:18789
 OPENCLAW_TOKEN=...
-OPENCLAW_MODEL=openclaw/default
+# Agent name only, for example default or another configured agent.
+OPENCLAW_AGENT=default
 
 # Optional. Empty means: openhavoice:<device-name>
 OPENCLAW_SESSION_KEY=

@@ -186,6 +186,17 @@ def session_key_for_device(device_name: str | None = None) -> str:
     return f"openhavoice:{safe or 'voice-pe'}"
 
 
+def openclaw_agent_model_value(agent: str) -> str:
+    """Return the OpenClaw agent-target value expected by /v1/chat/completions."""
+    value = (agent or "default").strip() or "default"
+    lowered = value.lower()
+    if lowered == "openclaw":
+        return "openclaw/default"
+    if lowered.startswith("openclaw/") or lowered.startswith("openclaw:") or lowered.startswith("agent:"):
+        return value
+    return f"openclaw/{value}"
+
+
 def openclaw_chat(message: str) -> str:
     url = CFG.openclaw_url.rstrip("/")
     if not url.endswith("/v1/chat/completions"):
@@ -205,7 +216,7 @@ def openclaw_chat(message: str) -> str:
 
     system_prompt = CFG.openclaw_voice_system_prompt
     payload = {
-        "model": CFG.openclaw_model,
+        "model": openclaw_agent_model_value(CFG.openclaw_agent),
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": message},
@@ -1008,7 +1019,7 @@ async def config_ui(request: web.Request) -> web.Response:
         <h2>OpenClaw Gateway</h2>
         <div class="fields">
           <div class="field"><label>OPENCLAW_URL <span class="current" data-current="OPENCLAW_URL"></span></label><input name="OPENCLAW_URL"></div>
-          <div class="field"><label>OPENCLAW_MODEL <span class="current" data-current="OPENCLAW_MODEL"></span></label><input name="OPENCLAW_MODEL"></div>
+          <div class="field"><label>OPENCLAW_AGENT <span class="current" data-current="OPENCLAW_AGENT"></span></label><input name="OPENCLAW_AGENT"><div class="hint">Nur Agentname eingeben, z.B. <code>default</code> oder ein konfigurierter Agent.</div></div>
           <div class="field"><label>OPENCLAW_SESSION_KEY <span class="current" data-current="OPENCLAW_SESSION_KEY"></span></label><input name="OPENCLAW_SESSION_KEY"><div class="hint">Default leer = <code>openhavoice:&lt;device-name&gt;</code></div></div>
           <div class="field"><label>OPENCLAW_MESSAGE_CHANNEL <span class="current" data-current="OPENCLAW_MESSAGE_CHANNEL"></span></label><input name="OPENCLAW_MESSAGE_CHANNEL"></div>
           <div class="field"><label>OPENCLAW_TOKEN <span class="current" data-current="OPENCLAW_TOKEN"></span></label><input name="OPENCLAW_TOKEN" type="password" placeholder="leave blank to keep existing"><div class="hint">Default: leer · Secret wird nie angezeigt.</div></div>

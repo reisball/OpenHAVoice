@@ -65,7 +65,7 @@ def cmd_generate(config: RelayConfig, args: argparse.Namespace) -> None:
         ("TTS (Orpheus)", ["orpheus_url", "orpheus_model", "orpheus_voice",
                            "tts_host", "tts_port", "tts_post_playback_grace_seconds"]),
         ("OpenClaw Gateway", ["openclaw_url", "openclaw_token", "openclaw_session_key",
-                              "openclaw_model", "openclaw_message_channel",
+                              "openclaw_agent", "openclaw_message_channel",
                               "openclaw_voice_system_prompt"]),
         ("VAD / Capture", ["min_speech_ms", "end_silence_ms", "max_capture_seconds",
                            "vad_aggressiveness", "rms_silence_threshold",

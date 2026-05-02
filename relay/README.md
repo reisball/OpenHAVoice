@@ -88,7 +88,7 @@ If the device remains red and does not emit `START`, make sure this relay is run
 
 ## OpenClaw integration
 
-The relay uses OpenClaw's OpenAI-compatible Chat Completions endpoint. Configure `OPENCLAW_URL`, `OPENCLAW_TOKEN`, and `OPENCLAW_MODEL` in `.env`.
+The relay uses OpenClaw's OpenAI-compatible Chat Completions endpoint. Configure `OPENCLAW_URL`, `OPENCLAW_TOKEN`, and `OPENCLAW_AGENT` in `.env`. Enter only the agent name, for example `default` or another configured agent.
 
 By default, `OPENCLAW_SESSION_KEY` should be left empty. The relay then derives a dedicated persistent session key from the Voice PE device name:
 
